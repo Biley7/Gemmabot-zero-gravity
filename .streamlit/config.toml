@@ -1,0 +1,24 @@
+# ── GemmaBot — Streamlit configuration ───────────────────────────────────
+# Committed so local dev and deployed containers share the same settings.
+# Secret values (API keys) go in .streamlit/secrets.toml which is gitignored.
+
+[server]
+headless          = true    # no browser auto-launch, no CORS warnings
+enableCORS        = false   # Render/DO terminate TLS upstream; keep false
+enableXsrfProtection = true
+maxUploadSize     = 10      # MB — enough for maze photos
+port              = 8501
+
+[browser]
+# Suppress the "You can now view your Streamlit app" banner in logs
+gatherUsageStats  = false
+
+[theme]
+base              = "dark"
+primaryColor      = "#4a9eff"
+backgroundColor   = "#0e1117"
+secondaryBackgroundColor = "#1a1d24"
+textColor         = "#fafafa"
+
+[logger]
+level             = "warning"   # reduce noise in production logs

@@ -1,0 +1,35 @@
+# ── .dockerignore ─────────────────────────────────────────────────────────
+# Keeps the build context small and prevents secrets leaking into the image.
+
+# Git & IDE
+.git
+.gitignore
+.DS_Store
+*.pyc
+__pycache__/
+.pytest_cache/
+
+# Secrets — NEVER bake these into an image
+.env
+.streamlit/secrets.toml
+
+# Dev / test artefacts
+tests/
+benchmarks/results.json
+benchmarks/results.md
+benchmarks/dry_run_output.txt
+logs/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Docs and CI (not needed at runtime)
+docs/
+*.md
+!README.md
+
+# Kiro workspace metadata
+.kiro/
+.freebuff/

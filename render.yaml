@@ -1,0 +1,42 @@
+# ── GemmaBot — Render.com blueprint ───────────────────────────────────────
+# Drop this file in the repo root, then in Render dashboard:
+#   New → Blueprint → connect your repo → it auto-reads this file.
+#
+# The service uses the Dockerfile (already in the repo) so no build command
+# needs to be specified here.  The GEMINI_API_KEY is the only secret you
+# must supply in the Render dashboard (Environment → Secret Files or env vars).
+# --------------------------------------------------------------------------
+
+services:
+  - type: web
+    name: gemmabot
+    runtime: docker             # uses the Dockerfile in the repo root
+    dockerfilePath: ./Dockerfile
+
+    # Free tier is enough for a hackathon demo; upgrade to "starter" for
+    # faster cold starts or if you hit memory limits.
+    plan: free
+
+    # Render sets PORT automatically; we hard-wire Streamlit to 8501 in the
+    # Dockerfile so we tell Render where to send traffic.
+    healthCheckPath: /_stcore/health
+
+    envVars:
+      # ── Required ──────────────────────────────────────────────────────
+      - key: GEMINI_API_KEY
+        sync: false             # set the value manually in the dashboard
+
+      # ── Optional overrides (defaults come from config.py) ─────────────
+      - key: GEMMA_API_MODEL
+        value: gemma-4-26b-a4b-it
+
+      - key: OLLAMA_MODEL
+        value: gemma4:e4b
+
+      # MAX_REPAIRS controls the repair loop cap (config.py default = 2)
+      - key: MAX_REPAIRS
+        value: "2"
+
+    # Render's free tier sleeps after 15 min of inactivity; the health-check
+    # endpoint wakes it on the next request.
+    autoDeploy: true

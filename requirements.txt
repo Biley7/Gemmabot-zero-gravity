@@ -1,5 +1,11 @@
-google-genai
-python-dotenv
-streamlit
-ollama
-pytest
+# ── GemmaBot dependencies ─────────────────────────────────────────────────
+# Pinned to the versions used during development.
+# To upgrade: pip install -U <pkg> && pip freeze | grep <pkg>
+
+google-genai==2.28.0
+python-dotenv==1.2.4
+streamlit==1.65.0
+ollama==0.6.3
+
+# ── Dev / test only (not needed in the Docker image) ──────────────────────
+pytest==9.1.1
