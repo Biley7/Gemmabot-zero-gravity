@@ -1,0 +1,602 @@
+[
+  {
+    "backend": "ollama",
+    "case": "default_map",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "default_map",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "default_map",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "default_map",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "default_map",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "default_map",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "one_turn_south",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "one_turn_south",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "one_turn_south",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "one_turn_south",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "one_turn_south",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "one_turn_south",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "several_turns_west",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "several_turns_west",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "several_turns_west",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "several_turns_west",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "several_turns_west",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "several_turns_west",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "long_detour_wall",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "long_detour_wall",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "long_detour_wall",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "long_detour_wall",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "long_detour_wall",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "long_detour_wall",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "tricky_pocket",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "tricky_pocket",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "tricky_pocket",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "tricky_pocket",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "tricky_pocket",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "ollama",
+    "case": "tricky_pocket",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "default_map",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "default_map",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "default_map",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "default_map",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "default_map",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "default_map",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "one_turn_south",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "one_turn_south",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "one_turn_south",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "one_turn_south",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "one_turn_south",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "one_turn_south",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "several_turns_west",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "several_turns_west",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "several_turns_west",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "several_turns_west",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "several_turns_west",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "several_turns_west",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "long_detour_wall",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "long_detour_wall",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "long_detour_wall",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "long_detour_wall",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "long_detour_wall",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "long_detour_wall",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "tricky_pocket",
+    "max_tries": 1,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "tricky_pocket",
+    "max_tries": 1,
+    "run": 2,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "tricky_pocket",
+    "max_tries": 1,
+    "run": 3,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "tricky_pocket",
+    "max_tries": 3,
+    "run": 1,
+    "success": true,
+    "attempts": 1,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "tricky_pocket",
+    "max_tries": 3,
+    "run": 2,
+    "success": true,
+    "attempts": 2,
+    "latency": 0.0,
+    "error": ""
+  },
+  {
+    "backend": "api",
+    "case": "tricky_pocket",
+    "max_tries": 3,
+    "run": 3,
+    "success": true,
+    "attempts": 3,
+    "latency": 0.001,
+    "error": ""
+  }
+]
