@@ -150,24 +150,58 @@ def check_world(world: Any) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 def build_map_prompt() -> str:
-    """Return a prompt instructing the vision model to output a world dict.
+    """Return the prompt sent to the vision model for map reading.
 
-    The field names match the real world dict used by the simulator so the
-    result can be passed directly to check_world and new_world().
+    The reply shape is the simulator's world dict (headings N, E, S, W — not
+    arrows), so an accepted reply can be passed straight to check_world() and
+    used as a world.  The prompt is perception-only: the backend verifies the
+    proposed world independently.
     """
+    last = SIZE - 1
+    rules = [
+        f"Coordinates are zero-based; x and y must be integers from 0 through {last}.",
+        "Include every visible wall.",
+        "Do not invent walls.",
+        "Do not omit visible walls.",
+        "Do not place the robot inside a wall.",
+        "Do not place the goal inside a wall.",
+        "Robot and goal must be different cells.",
+        "Do not shift coordinates because of image margins.",
+        f"The actual {SIZE}×{SIZE} grid defines the coordinate system.",
+        "Determine direction from the visible robot arrow; dir must be one of N, E, S, W.",
+        'If no direction arrow is visible, use "E" (the simulator default heading); '
+        "never infer direction from the robot's position.",
+        "Do not perform pathfinding.",
+        "Do not modify the map to make it solvable.",
+        "Do not add additional fields.",
+    ]
+    numbered_rules = "\n".join(
+        f"{i}. {rule}" for i, rule in enumerate(rules, start=1)
+    )
     return (
-        f"This image shows a hand-drawn {SIZE}×{SIZE} grid map of a robot world.\n"
-        "Identify:\n"
-        "  - The robot's starting cell (column x, row y — zero-indexed from top-left)\n"
-        "  - The robot's heading (one of: N, E, S, W)\n"
-        "  - The goal cell\n"
-        "  - All wall cells\n\n"
-        "Reply with ONLY a JSON object — no explanation, no code fences — "
-        "in this exact shape:\n"
-        '{"robot": [x, y], "dir": "E", "goal": [x, y], '
-        '"walls": [[x, y], ...]}\n\n'
-        f"The grid is {SIZE} columns wide and {SIZE} rows tall. "
-        "All coordinates must be integers in the range [0, 7]."
+        "You are a computer vision system that converts a top-down robot maze "
+        "image into a structured navigation world.\n\n"
+        f"The image contains an exactly {SIZE}×{SIZE} grid.\n\n"
+        "Coordinate system:\n"
+        f"* leftmost column = x=0, rightmost column = x={last}\n"
+        f"* top row = y=0, bottom row = y={last}\n"
+        f"* coordinates are zero-based integers from 0 through {last}\n\n"
+        "Objects:\n"
+        "* R identifies the robot starting cell.\n"
+        "* An arrow associated with R identifies the robot's facing direction "
+        "(up = N, right = E, down = S, left = W).\n"
+        "* G identifies the target goal.\n"
+        "* Dark filled cells or cells marked X identify walls.\n"
+        "* Empty cells are traversable.\n\n"
+        "Determine the map from the visible image.\n\n"
+        "Return exactly:\n"
+        '{"robot": [x, y], "dir": "E", "goal": [x, y], "walls": [[x, y], [x, y]]}\n\n'
+        "Rules:\n"
+        f"{numbered_rules}\n\n"
+        "The backend will independently verify the proposed world. "
+        "Your job is perception only.\n\n"
+        "Return ONLY the raw JSON object. Do not return markdown, code fences, "
+        "explanations, comments, greetings, or any additional text."
     )
 
 
