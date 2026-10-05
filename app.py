@@ -6,17 +6,20 @@ Owner: FRONTEND.  No fake results live here: every number, status, world and
 action shown comes from a real backend result — ``harness.plan_with_repair``
 history, ``map_vision.read_map`` history, ``simulator.render``/``step``,
 ``logger`` summaries and the benchmark files.
+
+The Execute stage is animated by ``frontend.simulation.player`` (the
+simulator's own timeline) and drawn by ``player_view`` — the player only
+replays those steps, it never re-simulates or re-times them.
 """
 from __future__ import annotations
 
 import copy
-import time
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from gemmabot.config import MAX_REPAIRS, STEP_DELAY
+from gemmabot.config import MAX_REPAIRS
 
 import engine
 import ui_helpers
@@ -27,6 +30,8 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.simulation import player as playback
+from frontend.simulation import player_view
 
 ROOT = Path(__file__).parent
 LOG_PATH = ROOT / "logs" / "runs.jsonl"
@@ -93,6 +98,8 @@ def _init_state() -> None:
     st.session_state.setdefault("mapvision_history", [])
     st.session_state.setdefault("uploaded_map", None)
     st.session_state.setdefault("connections", None)
+    st.session_state.setdefault("replay", None)
+    st.session_state.setdefault("replay_autoplay", False)
 
 
 _init_state()
@@ -107,6 +114,7 @@ def _reset_world() -> None:
     st.session_state.world = copy.deepcopy(st.session_state.map_source[name])
     st.session_state.logs = []
     st.session_state.text_result = None
+    st.session_state.replay = None
 
 
 def _use_scanned_map() -> None:
@@ -119,6 +127,17 @@ def _use_scanned_map() -> None:
     st.session_state.world = copy.deepcopy(scanned)
     st.session_state.logs = []
     st.session_state.text_result = None
+    st.session_state.replay = None
+
+
+def _render_replay(replay: dict) -> None:
+    """The Phase 3 execution player: play / pause / reset, 0.5× – 4× speed."""
+    autoplay = bool(st.session_state.pop("replay_autoplay", False))
+    st.components.v1.html(
+        player_view.player_html(replay, autoplay=autoplay),
+        height=player_view.player_height(),
+        scrolling=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +232,7 @@ if chosen_map != st.session_state.map_name:
     st.session_state.logs = []
     st.session_state.text_result = None
     st.session_state.last_run = None
-
-animation_speed = st.sidebar.slider(
-    "Animation speed (s / step)", 0.0, 1.5, float(STEP_DELAY), 0.05
-)
+    st.session_state.replay = None
 
 st.sidebar.button("Reset world", on_click=_reset_world)
 
@@ -306,8 +322,15 @@ with tabs["Text command"]:
     # Legend above the grid
     st.markdown(ui_helpers.grid_legend_html(), unsafe_allow_html=True)
 
+    # The board slot is either the live world, or the Phase 3 execution player
+    # replaying the last run (the player owns play / pause / reset and speed).
     board = st.empty()
-    _draw_board(board, st.session_state.world)
+    replay = st.session_state.get("replay") if st.session_state.get("text_result") else None
+    if replay:
+        with board:
+            _render_replay(replay)
+    else:
+        _draw_board(board, st.session_state.world)
 
     instruction = st.text_input(
         "Instruction", "Move to the goal using the safest route."
@@ -326,46 +349,28 @@ with tabs["Text command"]:
             metrics = ui_helpers.run_metrics(
                 result["actions"], result["attempts"], max_tries, result["latency"]
             )
-            outcome = None
+            replay = None
 
             if result["actions"] is not None:
-                exec_placeholder = st.empty()
-                executed_log: list[dict] = []
-                executed_text: list[str] = []
-                executed_path: list[list[int]] = []
-
-                def _on_step(entry: dict, sim_world: dict) -> None:
-                    executed_log.append(entry)
-                    executed_text.append(
-                        f"step {entry['step']}: "
-                        f"{entry['action']} -> {entry['message']}"
-                    )
-                    # Track path: the robot's current position is the new step
-                    current_pos = list(sim_world["robot"])
-                    if executed_path and executed_path[-1] != current_pos:
-                        executed_path.append(list(executed_path[-1]))  # previous pos → path
-                    executed_path.append(current_pos)
-                    exec_placeholder.markdown(
-                        DS.action_list(executed_log), unsafe_allow_html=True
-                    )
-                    _draw_board(board, sim_world,
-                                path=executed_path[:-1],
-                                current_step=current_pos)
-                    if animation_speed > 0:
-                        time.sleep(animation_speed)
-
-                outcome = engine.execute(
-                    st.session_state.world, result["actions"], on_step=_on_step
+                # Phase 3: execute on a deep copy and keep the simulator's own
+                # timeline.  Every cell, turn and message the player replays is
+                # a real ``simulator.step`` result — nothing is staged here.
+                replay = playback.build_timeline(
+                    st.session_state.world, result["actions"]
                 )
-                st.session_state.world = outcome["world"]
-                st.session_state.logs.extend(executed_text)
+                st.session_state.world = replay["final_world"]
+                st.session_state.logs.extend(playback.log_lines(replay))
+                st.session_state.replay = replay
+                st.session_state.replay_autoplay = True   # animate this run once
+            else:
+                st.session_state.replay = None
 
             st.session_state.text_result = {
                 **result,
                 "instruction": instruction,
                 "max_tries": max_tries,
                 "metrics": metrics,
-                "outcome": outcome,
+                "replay": replay,
             }
             st.session_state.last_run = {
                 "source": "text",
@@ -391,6 +396,10 @@ with tabs["Text command"]:
                 except Exception as exc:  # noqa: BLE001
                     st.warning(f"Run log could not be written: {exc}")
 
+            # Re-render so the board slot shows the player and it plays the run
+            # we just recorded instead of waiting for the next interaction.
+            st.rerun()
+
     # Persisted result — survives reruns
     stored = st.session_state.text_result
     if stored:
@@ -409,8 +418,8 @@ with tabs["Text command"]:
         # Telemetry row
         _render_telemetry({**stored["metrics"], "backend": stored["backend"]})
 
-        # Outcome status
-        outcome = stored["outcome"]
+        # Outcome status — from the simulator timeline the player replays
+        replay = stored.get("replay")
         if stored["actions"] is None:
             st.error(
                 f"Planning failed after {stored['attempts']} attempt(s): "
@@ -418,12 +427,12 @@ with tabs["Text command"]:
             )
         else:
             n = len(stored["actions"])
-            if outcome and outcome["reached"]:
+            if replay and replay["reached"]:
                 st.markdown(
                     DS.status_chip("🎯  Goal reached", "success"),
                     unsafe_allow_html=True,
                 )
-            elif outcome and not outcome["ok"]:
+            elif replay and not replay["ok"]:
                 st.markdown(
                     DS.status_chip("Execution blocked", "error"),
                     unsafe_allow_html=True,

@@ -56,8 +56,10 @@ def test_sidebar_controls_exist():
     at = _run_app()
     assert len(at.sidebar.radio) == 1          # Engine
     assert len(at.sidebar.selectbox) == 1      # Map picker
-    assert len(at.sidebar.slider) == 1         # Animation speed
     assert len(at.sidebar.number_input) == 1   # Max tries
+    # Playback speed now lives in the execution player (0.5× / 1× / 2× / 4×),
+    # so the old per-step sleep slider is gone.
+    assert len(at.sidebar.slider) == 0
 
 
 def test_map_picker_switches_the_active_world():
@@ -70,8 +72,8 @@ def test_map_picker_switches_the_active_world():
     assert world["dir"] == "E"
 
 
-def test_run_plan_renders_metrics_and_executes(monkeypatch):
-    """Regression: rendering a finished run must not crash (audio KeyError)."""
+def test_run_plan_builds_a_replayable_execution_timeline(monkeypatch):
+    """A verified plan is executed into a timeline the player can replay."""
     import engine
 
     def fake_run_plan(instruction, world, backend="api", max_tries=3, ask=None):
@@ -95,7 +97,6 @@ def test_run_plan_renders_metrics_and_executes(monkeypatch):
     monkeypatch.setattr(engine, "run_plan", fake_run_plan)
 
     at = _run_app()
-    at.sidebar.slider[0].set_value(0.0).run()   # no animation delay
     _button(at, "Run plan").click().run()
 
     assert not at.exception, [element.value for element in at.exception]
@@ -107,6 +108,16 @@ def test_run_plan_renders_metrics_and_executes(monkeypatch):
     assert metrics.get("Latency") == "1.25 s"
     assert metrics.get("Backend") == "api"
     assert metrics.get("Status") == "Verified safe"
+
+    # Phase 3: the board slot now shows the player for this run.
+    replay = at.session_state["replay"]
+    assert replay["reached"] is True
+    assert replay["duration_ms"] > 0
+    assert replay["cells"] >= len(DEFAULT_WORLD_PLAN) - 1
+    assert replay["final_world"]["robot"] == [6, 5]
+    assert at.session_state["text_result"]["replay"] == replay
+    # The one-shot autoplay flag is consumed while the player renders.
+    assert at.session_state.get("replay_autoplay") in (None, False)
 
 
 def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):

@@ -144,8 +144,9 @@ def grid_html(rows: list[str]) -> str:
 # Hero grid — world_grid_html
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Robot directional SVG arrows — crisp geometric icons, no emoji
-_ROBOT_SVG: dict[str, str] = {
+# Robot directional SVG arrows — crisp geometric icons, no emoji.
+# Public: shared with the execution player (frontend/simulation/player_view.py).
+ROBOT_SVG: dict[str, str] = {
     # North — arrow pointing up
     "N": (
         '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">'
@@ -173,7 +174,7 @@ _ROBOT_SVG: dict[str, str] = {
 }
 
 # Goal SVG — a clean target crosshair
-_GOAL_SVG = (
+GOAL_SVG = (
     '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">'
     '<circle cx="12" cy="12" r="8" stroke="{fg}" stroke-width="1.5"/>'
     '<circle cx="12" cy="12" r="4" stroke="{fg}" stroke-width="1.5"/>'
@@ -186,7 +187,7 @@ _GOAL_SVG = (
 )
 
 # Wall inner texture — 3 horizontal hash marks
-_WALL_SVG = (
+WALL_SVG = (
     '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">'
     '<line x1="6" y1="8"  x2="18" y2="8"  stroke="{fg}" stroke-width="1.2" stroke-linecap="round" opacity="0.5"/>'
     '<line x1="6" y1="12" x2="18" y2="12" stroke="{fg}" stroke-width="1.2" stroke-linecap="round" opacity="0.5"/>'
@@ -195,7 +196,7 @@ _WALL_SVG = (
 )
 
 # Path dot — small centred circle
-_PATH_SVG = (
+PATH_SVG = (
     '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">'
     '<circle cx="12" cy="12" r="3" fill="{fg}" opacity="0.55"/>'
     '</svg>'
@@ -267,14 +268,14 @@ def _hero_cell(
 
     # ── Icon ──────────────────────────────────────────────────────────────
     if is_robot:
-        svg_tmpl = _ROBOT_SVG.get(direction, _ROBOT_SVG["E"])
+        svg_tmpl = ROBOT_SVG.get(direction, ROBOT_SVG["E"])
         icon_svg = svg_tmpl.format(fg=C.ACCENT_BLUE, stroke=C.ACCENT_BLUE_DIM)
     elif is_goal:
-        icon_svg = _GOAL_SVG.format(fg=C.SUCCESS)
+        icon_svg = GOAL_SVG.format(fg=C.SUCCESS)
     elif is_wall:
-        icon_svg = _WALL_SVG.format(fg=C.TEXT_MUTED)
+        icon_svg = WALL_SVG.format(fg=C.TEXT_MUTED)
     elif is_path or is_current:
-        icon_svg = _PATH_SVG.format(fg=C.RUNNING)
+        icon_svg = PATH_SVG.format(fg=C.RUNNING)
     else:
         icon_svg = ""
 
@@ -438,10 +439,10 @@ def grid_legend_html() -> str:
             f"gap:{S.px(S.XS)}'>{swatch}{lbl}</div>"
         )
 
-    robot_icon  = _ROBOT_SVG["E"].format(fg=C.ACCENT_BLUE, stroke=C.ACCENT_BLUE_DIM)
-    goal_icon   = _GOAL_SVG.format(fg=C.SUCCESS)
-    wall_icon   = _WALL_SVG.format(fg=C.TEXT_MUTED)
-    path_icon   = _PATH_SVG.format(fg=C.RUNNING)
+    robot_icon  = ROBOT_SVG["E"].format(fg=C.ACCENT_BLUE, stroke=C.ACCENT_BLUE_DIM)
+    goal_icon   = GOAL_SVG.format(fg=C.SUCCESS)
+    wall_icon   = WALL_SVG.format(fg=C.TEXT_MUTED)
+    path_icon   = PATH_SVG.format(fg=C.RUNNING)
     empty_icon  = ""
 
     items = [

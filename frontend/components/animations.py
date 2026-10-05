@@ -13,6 +13,17 @@ DURATION_BASE     = 200   # standard hover / focus transition
 DURATION_MODERATE = 300   # panel expand/collapse, status chip swap
 DURATION_SLOW     = 500   # board cell update during execution
 
+# ── Execution playback (Phase 3) ─────────────────────────────────────────────
+# These are the animation's 1× timings. The player divides by the selected
+# speed (0.5× / 1× / 2× / 4×); nothing else scales them.
+CELL_STEP_MS   = 300   # forward: exactly one cell at 1×
+TURN_MS        = 300   # smooth 90° rotation at 1×
+STEP_GAP_MS    = 60    # settle beat between two actions
+HALT_MS        = 420   # beat held on a blocked / unknown action
+TRACE_DRAW_MS  = 160   # trail segment drawing in behind the robot
+SPEED_OPTIONS: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0)
+DEFAULT_SPEED = 1.0
+
 # ── Easing ───────────────────────────────────────────────────────────────────
 EASE_OUT   = "cubic-bezier(0.0, 0.0, 0.2, 1.0)"   # decelerate — most UI transitions
 EASE_IN    = "cubic-bezier(0.4, 0.0, 1.0, 1.0)"   # accelerate — exit transitions
@@ -71,6 +82,14 @@ KEYFRAME_FADE_IN = """
 }
 """
 
+# Trail segment drawing itself in — used by the execution player's path trace
+KEYFRAME_TRACE_DRAW = """
+@keyframes gb-trace-draw {
+  from { stroke-dashoffset: var(--gb-trace-len, 40); }
+  to   { stroke-dashoffset: 0; }
+}
+"""
+
 def transition(*properties: str, duration: int = DURATION_BASE, easing: str = EASE_OUT) -> str:
     """Return a CSS transition string for the given properties."""
     dur = f"{duration}ms"
@@ -93,4 +112,5 @@ ALL_KEYFRAMES = "\n".join([
     KEYFRAME_FADE_IN,
     KEYFRAME_GOAL_GLOW,
     KEYFRAME_STEP_FLASH,
+    KEYFRAME_TRACE_DRAW,
 ])
