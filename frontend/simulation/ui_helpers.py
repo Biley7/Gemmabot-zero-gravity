@@ -15,22 +15,27 @@ import re
 from typing import Any
 
 from gemmabot.simulator import ARROW
+from frontend.components import colors as C
+from frontend.components import spacing as S
+from frontend.components import typography as T
 
 # Glyphs produced by gemmabot.simulator.render().
-WALL_CELL = "🧱"
-GOAL_CELL = "🎯"
+WALL_CELL  = "🧱"
+GOAL_CELL  = "🎯"
 EMPTY_CELL = "⬜"
 ROBOT_CELLS = set(ARROW.values())
 
-CELL_SIZE = 40          # pixel size of one maze cell in the HTML grid
-LABEL_SIZE = 26         # pixel width of the row-coordinate gutter
+CELL_SIZE   = S.CELL_SIZE          # 40px — from spacing token
+LABEL_SIZE  = S.CELL_LABEL_WIDTH   # 24px — from spacing token
 
 _CELL_BG = {
-    WALL_CELL: "#333333",
-    GOAL_CELL: "#3d3418",
-    EMPTY_CELL: "#111111",
+    WALL_CELL:  C.GRID_WALL,
+    GOAL_CELL:  C.GRID_GOAL,
+    EMPTY_CELL: C.GRID_EMPTY,
 }
-_ROBOT_BG = "#17324d"
+_ROBOT_BG    = C.GRID_ROBOT
+_BORDER_COL  = C.GRID_BORDER
+_LABEL_COLOR = C.GRID_LABEL
 
 
 def _split_cells(row: str) -> list[str]:
@@ -60,7 +65,7 @@ def _cell_html(glyph: str) -> str:
         "<div class='gb-cell' style='"
         f"width:{CELL_SIZE}px;height:{CELL_SIZE}px;display:flex;"
         f"align-items:center;justify-content:center;font-size:{font_size}px;"
-        f"border:1px solid #3a3a3a;box-sizing:border-box;background:{background}'>"
+        f"border:1px solid {_BORDER_COL};box-sizing:border-box;background:{background}'>"
         f"{html.escape(glyph)}</div>"
     )
 
@@ -68,7 +73,8 @@ def _cell_html(glyph: str) -> str:
 def _label_html(text: str, height: int) -> str:
     return (
         "<div class='gb-label' style='"
-        f"width:{LABEL_SIZE}px;height:{height}px;font-size:11px;color:#8a8a8a;"
+        f"width:{LABEL_SIZE}px;height:{height}px;"
+        f"font-size:{T.SIZE_XS}px;font-family:{T.FONT_MONO};color:{_LABEL_COLOR};"
         "display:flex;align-items:center;justify-content:center'>"
         f"{html.escape(text)}</div>"
     )
@@ -86,7 +92,7 @@ def grid_html(rows: list[str]) -> str:
 
     parts = [
         "<div class='gb-grid' style='display:inline-block;"
-        "font-family:ui-monospace,SFMono-Regular,Menlo,monospace'>"
+        f"font-family:{T.FONT_MONO}'>"
     ]
 
     # Column coordinate labels (x grows right).
@@ -95,7 +101,8 @@ def grid_html(rows: list[str]) -> str:
     for x in range(columns):
         parts.append(
             "<div class='gb-label' style='"
-            f"width:{CELL_SIZE}px;height:20px;font-size:11px;color:#8a8a8a;"
+            f"width:{CELL_SIZE}px;height:20px;"
+            f"font-size:{T.SIZE_XS}px;font-family:{T.FONT_MONO};color:{_LABEL_COLOR};"
             "display:flex;align-items:center;justify-content:center'>"
             f"{x}</div>"
         )
