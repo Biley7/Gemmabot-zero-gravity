@@ -26,12 +26,11 @@ ROOT = Path(__file__).parent
 LOG_PATH = ROOT / "logs" / "runs.jsonl"
 BENCHMARK_PATH = ROOT / "benchmarks" / "results.md"
 
-# ── Optional backend modules (spec §27): the app must start without them ──
+# ── Optional backend modules: the app must start without them ─────────────
 try:
-    import gemmabot.map_vision as map_vision_module  # noqa: F401
+    import gemmabot.map_vision  # noqa: F401 — presence check only
     HAVE_MAPVISION = True
 except ImportError:  # pragma: no cover - depends on environment
-    map_vision_module = None
     HAVE_MAPVISION = False
 
 try:
@@ -42,10 +41,9 @@ except ImportError:  # pragma: no cover - depends on environment
     HAVE_LOGGER = False
 
 try:
-    from gemmabot import benchmark as benchmark_module  # noqa: F401
+    import gemmabot.benchmark  # noqa: F401 — presence check only
     HAVE_BENCHMARK = True
 except ImportError:  # pragma: no cover - depends on environment
-    benchmark_module = None
     HAVE_BENCHMARK = False
 
 load_dotenv()
@@ -189,6 +187,8 @@ if chosen_map != st.session_state.map_name:
     st.session_state.map_name = chosen_map
     st.session_state.world = copy.deepcopy(st.session_state.map_source[chosen_map])
     st.session_state.logs = []
+    st.session_state.text_result = None
+    st.session_state.last_run = None
 
 animation_speed = st.sidebar.slider(
     "Animation speed (seconds per move)", 0.0, 1.5, float(STEP_DELAY), 0.05

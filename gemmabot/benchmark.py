@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Callable
 
 from gemmabot.simulator import new_world
-from gemmabot.harness import plan_with_repair
-from gemmabot.logger import log_run
+from backend.verifier.harness import plan_with_repair
+from backend.logger.logger import log_run
 
 # ---------------------------------------------------------------------------
 # Test cases
@@ -434,7 +434,7 @@ def main() -> None:
             backends[name] = lambda i, w: "{}"   # never actually called
     else:
         # Real backends — lazy import so the module loads without google/ollama.
-        from gemmabot.planner import ask_api, ask_ollama  # noqa: PLC0415
+        from backend.planner.planner import ask_api, ask_ollama  # noqa: PLC0415
         if args.backend == "ollama":
             backends = {"ollama": ask_ollama}
         elif args.backend == "api":
