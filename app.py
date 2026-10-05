@@ -17,7 +17,6 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from gemmabot.config import MAX_REPAIRS, STEP_DELAY
-from gemmabot.simulator import render
 
 import engine
 import ui_helpers
@@ -126,10 +125,15 @@ def _use_scanned_map() -> None:
 # Rendering helpers (design-system backed)
 # ---------------------------------------------------------------------------
 
-def _draw_board(placeholder, world: dict) -> None:
-    """Render the world through the simulator renderer (source of truth)."""
+def _draw_board(placeholder, world: dict, path: list | None = None, current_step: list | None = None) -> None:
+    """Render the hero grid from the world dict (source of truth)."""
     placeholder.markdown(
-        ui_helpers.grid_html(render(world)), unsafe_allow_html=True
+        ui_helpers.world_grid_html(
+            world,
+            path=path or [],
+            current_step=current_step if current_step is not None else -1,
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -299,6 +303,9 @@ with tabs["Text command"]:
         unsafe_allow_html=True,
     )
 
+    # Legend above the grid
+    st.markdown(ui_helpers.grid_legend_html(), unsafe_allow_html=True)
+
     board = st.empty()
     _draw_board(board, st.session_state.world)
 
@@ -325,6 +332,7 @@ with tabs["Text command"]:
                 exec_placeholder = st.empty()
                 executed_log: list[dict] = []
                 executed_text: list[str] = []
+                executed_path: list[list[int]] = []
 
                 def _on_step(entry: dict, sim_world: dict) -> None:
                     executed_log.append(entry)
@@ -332,10 +340,17 @@ with tabs["Text command"]:
                         f"step {entry['step']}: "
                         f"{entry['action']} -> {entry['message']}"
                     )
+                    # Track path: the robot's current position is the new step
+                    current_pos = list(sim_world["robot"])
+                    if executed_path and executed_path[-1] != current_pos:
+                        executed_path.append(list(executed_path[-1]))  # previous pos → path
+                    executed_path.append(current_pos)
                     exec_placeholder.markdown(
                         DS.action_list(executed_log), unsafe_allow_html=True
                     )
-                    _draw_board(board, sim_world)
+                    _draw_board(board, sim_world,
+                                path=executed_path[:-1],
+                                current_step=current_pos)
                     if animation_speed > 0:
                         time.sleep(animation_speed)
 
@@ -533,8 +548,9 @@ if HAVE_MAPVISION:
                     unsafe_allow_html=True,
                 )
                 st.markdown(DS.section_title("Parsed grid"), unsafe_allow_html=True)
+                st.markdown(ui_helpers.grid_legend_html(), unsafe_allow_html=True)
                 st.markdown(
-                    ui_helpers.grid_html(render(vision_world)),
+                    ui_helpers.world_grid_html(vision_world),
                     unsafe_allow_html=True,
                 )
                 st.button("Use this map", on_click=_use_scanned_map)

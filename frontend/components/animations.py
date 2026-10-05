@@ -45,12 +45,30 @@ KEYFRAME_SLIDE_IN = f"""
 }}
 """
 
+# Subtle goal glow — breathes softly, never distracting
+KEYFRAME_GOAL_GLOW = """
+@keyframes gb-goal-glow {
+  0%   { box-shadow: 0 0 4px 1px rgba(62,207,142,0.15); }
+  50%  { box-shadow: 0 0 10px 3px rgba(62,207,142,0.32); }
+  100% { box-shadow: 0 0 4px 1px rgba(62,207,142,0.15); }
+}
+"""
+
+# Current-step cell flash — single pulse when a step fires
+KEYFRAME_STEP_FLASH = """
+@keyframes gb-step-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(74,143,255,0.0); }
+  30%  { box-shadow: 0 0 12px 4px rgba(74,143,255,0.55); }
+  100% { box-shadow: 0 0 4px 1px rgba(74,143,255,0.15); }
+}
+"""
+
 # Fade in used for cards / panels on first render
-KEYFRAME_FADE_IN = f"""
-@keyframes gb-fade-in {{
-  from {{ opacity: 0; }}
-  to   {{ opacity: 1; }}
-}}
+KEYFRAME_FADE_IN = """
+@keyframes gb-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
 """
 
 def transition(*properties: str, duration: int = DURATION_BASE, easing: str = EASE_OUT) -> str:
@@ -73,4 +91,6 @@ ALL_KEYFRAMES = "\n".join([
     KEYFRAME_BLINK,
     KEYFRAME_SLIDE_IN,
     KEYFRAME_FADE_IN,
+    KEYFRAME_GOAL_GLOW,
+    KEYFRAME_STEP_FLASH,
 ])

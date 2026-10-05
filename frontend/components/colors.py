@@ -49,12 +49,30 @@ THINKING_BG    = "#1a0d2e"
 THINKING_BORDER = "#3a1a5c"
 
 # ── Simulation grid ──────────────────────────────────────────────────────────
-GRID_EMPTY     = "#111318"   # traversable cell
-GRID_WALL      = "#2a2d35"   # wall cell
-GRID_GOAL      = "#1a2210"   # goal cell
-GRID_ROBOT     = "#0d1e2e"   # robot cell
-GRID_BORDER    = "#252830"   # cell border
-GRID_LABEL     = "#5c6270"   # coordinate axis labels
+GRID_EMPTY          = "#111318"   # traversable cell
+GRID_WALL           = "#2a2d35"   # wall cell
+GRID_GOAL           = "#1a2210"   # goal cell
+GRID_ROBOT          = "#0d1e2e"   # robot cell
+GRID_BORDER         = "#252830"   # cell border
+GRID_LABEL          = "#5c6270"   # coordinate axis labels
+
+# Additional cell states for the hero grid
+GRID_PATH           = "#0d1e2e"   # cells on executed path
+GRID_PATH_BORDER    = "#1a3a6e"   # border accent for path cells
+GRID_CURRENT        = "#0d2540"   # the step currently animating
+GRID_CURRENT_BORDER = "#4a8fff"   # bright accent on current-step cell
+
+# Glow colours (box-shadow values, not fills)
+GRID_GOAL_GLOW      = "#3ecf8e"   # subtle green glow around goal
+GRID_ROBOT_GLOW     = "#4a8fff"   # blue glow around robot
+GRID_CURRENT_GLOW   = "#4a8fff"   # bright glow on active step
+
+# Wall inner gradient stops (dark top to solid bottom — no actual gradient, just two-stop)
+GRID_WALL_SURFACE   = "#32363f"   # lighter face of solid wall block
+GRID_WALL_EDGE      = "#1e2028"   # shadow edge of wall block
+
+# Hover
+GRID_HOVER          = "#1e2230"   # cell hover overlay
 
 # ── Monospace telemetry ──────────────────────────────────────────────────────
 TELEMETRY_VALUE = "#c8d0e0"  # metric value

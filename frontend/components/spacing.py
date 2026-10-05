@@ -28,8 +28,10 @@ METRIC_GAP        = SM       #  8px
 ACTION_ROW_GAP    = SM       #  8px
 
 # ── Grid cell ────────────────────────────────────────────────────────────────
-CELL_SIZE         = 40       # px — simulation grid cell
-CELL_LABEL_WIDTH  = 24       # px — axis label gutter
+CELL_SIZE         = 40       # px — compat grid cell (used by grid_html)
+CELL_SIZE_HERO    = 64       # px — hero grid cell (world_grid_html)
+CELL_LABEL_WIDTH  = 24       # px — axis label gutter (compat)
+CELL_LABEL_HERO   = 28       # px — axis label gutter (hero)
 
 # ── Border radius ────────────────────────────────────────────────────────────
 RADIUS_SM  = 3    # px — badge, chip
