@@ -6,6 +6,12 @@ Public API
 ----------
 check_world(world) -> (bool, str)
     Pure validation + BFS reachability.  No AI.  No network.
+    Thin wrapper over check_world_report(): (report["ok"], report["reason"]).
+
+check_world_report(world) -> {"ok", "reason", "checks"}
+    The same verdict, reported per check — ✓ Valid, ✓ Inside bounds,
+    ✓ Reachable.  A check that could not be evaluated is ok=None (unproven),
+    never a pass.
 
 build_map_prompt() -> str
     System prompt telling the vision model what JSON to return.
@@ -38,35 +44,62 @@ from gemmabot.simulator import DIRS
 # 1.  check_world — pure code, no AI
 # ---------------------------------------------------------------------------
 
-def check_world(world: Any) -> tuple[bool, str]:
-    """Validate a world dict for correctness and reachability.
+# The three verdicts the Vision Lab displays for a proposed world, in the
+# order they are always reported:
+#     ✓ Valid · ✓ Inside bounds · ✓ Reachable
+# ``valid`` covers the reading's shape (robot / heading / goal / walls) and that
+# the two endpoints are real, distinct cells; ``in_bounds`` is the grid extent;
+# ``reachable`` is the BFS search.  A check that could not be evaluated is
+# ``ok=None`` (unproven) and is never reported as a pass — the same convention
+# ``backend.verifier.harness.verify_plan`` uses.
+WORLD_CHECKS: tuple[tuple[str, str], ...] = (
+    ("valid", "Valid"),
+    ("in_bounds", "Inside bounds"),
+    ("reachable", "Reachable"),
+)
 
-    Parameters
-    ----------
-    world:
-        Any value — the function never raises on bad input.
 
-    Returns
-    -------
-    (True, "ok")
-        World is structurally valid and the goal is reachable from start.
-    (False, reason)
-        Describes the first problem found.
+def _plural(count: int, noun: str) -> str:
+    """``1 wall`` / ``7 walls``."""
+    return f"{count} {noun}" if int(count) == 1 else f"{int(count)} {noun}s"
+
+
+def _finding(check_id: str, message: str, **facts: Any) -> dict:
+    """One problem: which check it fails, the sentence, and the fact behind it."""
+    return {"check": check_id, "message": message, "data": dict(facts)}
+
+
+def _world_findings(world: Any) -> tuple[list[dict], dict | None]:
+    """Every problem *world* has, in the order the checker has always found them.
+
+    Returns ``(findings, parts)``.  *parts* is the parsed robot / goal / walls /
+    heading when the reading's shape is readable at all, and ``None`` when it is
+    not — a reading that is not a world cannot be bounds-checked or searched, so
+    the later checks stay unproven instead of being guessed.
     """
+    findings: list[dict] = []
+
     # ── Type guard ────────────────────────────────────────────────────────
     if not isinstance(world, dict):
-        return False, f"world must be a dict, got {type(world).__name__}"
+        return (
+            [_finding("valid", f"world must be a dict, got {type(world).__name__}")],
+            None,
+        )
 
     # ── Required keys ─────────────────────────────────────────────────────
     required = {"robot": list, "dir": str, "goal": list, "walls": list}
     for key, expected_type in required.items():
         if key not in world:
-            return False, f"missing required key: '{key}'"
-        if not isinstance(world[key], expected_type):
-            return False, (
+            findings.append(_finding("valid", f"missing required key: '{key}'"))
+        elif not isinstance(world[key], expected_type):
+            findings.append(_finding(
+                "valid",
                 f"'{key}' must be {expected_type.__name__}, "
-                f"got {type(world[key]).__name__}"
-            )
+                f"got {type(world[key]).__name__}",
+                field=key,
+            ))
+    if findings:
+        return findings, None
 
     robot = world["robot"]
     goal  = world["goal"]
@@ -76,51 +109,105 @@ def check_world(world: Any) -> tuple[bool, str]:
     # ── robot and goal must be [x, y] int lists ───────────────────────────
     for name, cell in (("robot", robot), ("goal", goal)):
         if len(cell) != 2 or not all(isinstance(v, int) for v in cell):
-            return False, f"'{name}' must be a list of two ints, got {cell!r}"
+            findings.append(_finding(
+                "valid", f"'{name}' must be a list of two ints, got {cell!r}",
+                field=name,
+            ))
 
     # ── walls must be a list of [x, y] int pairs ─────────────────────────
     for i, w in enumerate(walls):
         if (not isinstance(w, list) or len(w) != 2
                 or not all(isinstance(v, int) for v in w)):
-            return False, f"walls[{i}] must be a list of two ints, got {w!r}"
+            findings.append(_finding(
+                "valid", f"walls[{i}] must be a list of two ints, got {w!r}",
+                field=f"walls[{i}]",
+            ))
 
     # ── heading ───────────────────────────────────────────────────────────
     if heading not in DIRS:
-        return False, f"heading '{heading}' is not valid; expected one of {DIRS}"
+        findings.append(_finding(
+            "valid", f"heading '{heading}' is not valid; expected one of {DIRS}",
+            field="dir",
+        ))
+
+    if findings:
+        return findings, None
 
     # ── bounds check (0 ≤ x, y < SIZE) ───────────────────────────────────
     def in_bounds(cell: list) -> bool:
         return 0 <= cell[0] < SIZE and 0 <= cell[1] < SIZE
 
     if not in_bounds(robot):
-        return False, f"robot position {robot} is outside the {SIZE}×{SIZE} grid"
+        findings.append(_finding(
+            "in_bounds",
+            f"robot position {robot} is outside the {SIZE}×{SIZE} grid",
+            cell=list(robot), field="robot",
+        ))
     if not in_bounds(goal):
-        return False, f"goal position {goal} is outside the {SIZE}×{SIZE} grid"
+        findings.append(_finding(
+            "in_bounds",
+            f"goal position {goal} is outside the {SIZE}×{SIZE} grid",
+            cell=list(goal), field="goal",
+        ))
     for i, w in enumerate(walls):
         if not in_bounds(w):
-            return False, (
-                f"walls[{i}] = {w} is outside the {SIZE}×{SIZE} grid"
-            )
+            findings.append(_finding(
+                "in_bounds",
+                f"walls[{i}] = {w} is outside the {SIZE}×{SIZE} grid",
+                cell=list(w), field=f"walls[{i}]",
+            ))
 
     # ── wall-overlap checks ───────────────────────────────────────────────
     wall_set = {tuple(w) for w in walls}
     if tuple(robot) in wall_set:
-        return False, f"robot start {robot} is on a wall"
+        findings.append(_finding(
+            "valid", f"robot start {robot} is on a wall",
+            cell=list(robot), field="robot",
+        ))
     if tuple(goal) in wall_set:
-        return False, f"goal {goal} is on a wall"
+        findings.append(_finding(
+            "valid", f"goal {goal} is on a wall",
+            cell=list(goal), field="goal",
+        ))
 
     # ── start ≠ goal ──────────────────────────────────────────────────────
     if robot == goal:
-        return False, f"robot start and goal are the same cell {robot}"
+        findings.append(_finding(
+            "valid", f"robot start and goal are the same cell {robot}",
+            cell=list(robot),
+        ))
 
-    # ── BFS reachability (4-directional, ignores heading) ─────────────────
-    start = tuple(robot)
-    target = tuple(goal)
+    return findings, {"robot": robot, "goal": goal, "walls": walls, "dir": heading}
+
+
+def _unsearchable_reason(parts: dict | None, findings: list[dict]) -> str | None:
+    """Why reachability cannot be asked, or ``None`` when it can.
+
+    A BFS verdict is only well-posed for a reading whose robot and goal are real,
+    distinct, in-grid cells that are not themselves obstacles.  Anything else is
+    reported as unproven rather than searched.
+    """
+    if parts is None:
+        return findings[0]["message"] if findings else "the reading is not a world"
+    blocker = next(
+        (f for f in findings if f["check"] in ("valid", "in_bounds")), None
+    )
+    return blocker["message"] if blocker else None
+
+
+def _unreachable_finding(parts: dict) -> dict | None:
+    """The unreachable-goal finding, or ``None`` when the BFS reaches the goal.
+
+    4-directional BFS over the grid; headings are irrelevant to reachability.
+    """
+    wall_set = {tuple(w) for w in parts["walls"]}
+    start = tuple(parts["robot"])
+    target = tuple(parts["goal"])
     visited = {start}
     queue: deque[tuple[int, int]] = deque([start])
     found = False
 
-    while queue:
+    while queue and not found:
         cx, cy = queue.popleft()
         for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
             nx, ny = cx + dx, cy + dy
@@ -133,16 +220,121 @@ def check_world(world: Any) -> tuple[bool, str]:
                     break
                 visited.add(nb)
                 queue.append(nb)
-        if found:
-            break
 
-    if not found:
-        return False, (
-            f"goal is unreachable: no path from {robot} to {goal} "
-            f"on a {SIZE}×{SIZE} grid with {len(walls)} wall(s)"
+    if found:
+        return None
+    return _finding(
+        "reachable",
+        f"goal is unreachable: no path from {parts['robot']} to {parts['goal']} "
+        f"on a {SIZE}×{SIZE} grid with {len(parts['walls'])} wall(s)",
+        robot=list(parts["robot"]), goal=list(parts["goal"]),
+        walls=len(parts["walls"]),
+    )
+
+
+def _pass_detail(check_id: str, parts: dict) -> str:
+    """What a passing check actually established, in the reading's own numbers."""
+    walls = len(parts["walls"])
+    if check_id == "valid":
+        return (
+            f"well-formed world — robot, heading, goal and "
+            f"{_plural(walls, 'wall')} parsed"
         )
+    if check_id == "in_bounds":
+        return (
+            f"robot, goal and all {_plural(walls, 'wall')} fit the "
+            f"{SIZE}×{SIZE} grid"
+        )
+    return (
+        f"BFS found a path from {parts['robot']} to {parts['goal']} "
+        f"around {_plural(walls, 'wall')}"
+    )
 
-    return True, "ok"
+
+def check_world_report(world: Any) -> dict:
+    """Validate *world* and report each check separately.
+
+    The structured form of :func:`check_world`: same verdict, same failure
+    sentence, plus one record per entry in ``WORLD_CHECKS``.
+
+    Returns
+    -------
+    dict
+        ``{"ok": bool, "reason": str, "checks": [{"id", "label", "ok",
+        "detail", "data"}]}``.  ``reason`` is the first problem found (or
+        ``"ok"``); ``ok`` is true only when all three checks passed; a check that
+        could not be evaluated is ``ok=None``; ``data`` carries the fact behind a
+        failure and is ``{}`` on a pass or an unproven check.
+
+    Never raises on any input.
+    """
+    findings, parts = _world_findings(world)
+
+    # Reachability is only asked when the question is well-posed, and its
+    # finding joins the earlier ones so `reason` stays the first problem found.
+    blocker = _unsearchable_reason(parts, findings)
+    if blocker is None and parts is not None:
+        unreachable = _unreachable_finding(parts)
+        if unreachable:
+            findings.append(unreachable)
+
+    by_check: dict[str, list[dict]] = {check_id: [] for check_id, _ in WORLD_CHECKS}
+    for finding in findings:
+        by_check[finding["check"]].append(finding)
+
+    checks: list[dict] = []
+    for check_id, label in WORLD_CHECKS:
+        hits = by_check[check_id]
+        # Unproven is per check: without a parsed reading nothing can be
+        # bounds-checked, and without a real start and goal there is nothing to
+        # search.  A check that *was* evaluated reports its own verdict — shape,
+        # extents and the two endpoints are examined independently, so a
+        # failure in one never hides a pass in another.
+        unproven: str | None = None
+        if parts is None:
+            unproven = "not evaluated — the reading is not a world yet"
+        if check_id == "reachable" and blocker is not None:
+            unproven = f"not evaluated — {blocker}"
+
+        if hits:
+            ok, detail, data = False, hits[0]["message"], hits[0]["data"]
+        elif unproven is not None:
+            ok, detail, data = None, unproven, {}
+        else:
+            ok, detail, data = True, _pass_detail(check_id, parts), {}
+        checks.append({
+            "id": check_id, "label": label, "ok": ok,
+            "detail": detail, "data": data,
+        })
+
+    return {
+        "ok": all(check["ok"] is True for check in checks),
+        "reason": findings[0]["message"] if findings else "ok",
+        "checks": checks,
+    }
+
+
+def check_world(world: Any) -> tuple[bool, str]:
+    """Validate a world dict for correctness and reachability.
+
+    Thin wrapper over :func:`check_world_report` — ``(report["ok"],
+    report["reason"])``.  Kept as the terse form for callers that only need the
+    verdict and the first problem.
+
+    Parameters
+    ----------
+    world:
+        Any value — the function never raises on bad input.
+
+    Returns
+    -------
+    (True, "ok")
+        World is structurally valid, in bounds, and the goal is reachable.
+    (False, reason)
+        Describes the first problem found.
+    """
+    report = check_world_report(world)
+    return report["ok"], report["reason"]
 
 
 # ---------------------------------------------------------------------------

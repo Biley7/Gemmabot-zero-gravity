@@ -115,8 +115,9 @@ def animation_danger_pulse(duration_ms: int = 1800) -> str:
 def animation_slide_in(duration_ms: int = DURATION_MODERATE) -> str:
     return f"gb-slide-in {duration_ms}ms {EASE_OUT} both"
 
-def animation_fade_in(duration_ms: int = DURATION_MODERATE) -> str:
-    return f"gb-fade-in {duration_ms}ms {EASE_OUT} both"
+def animation_fade_in(duration_ms: int = DURATION_MODERATE, delay_ms: int = 0) -> str:
+    """Fade in once and hold. *delay_ms* staggers a sequence of elements."""
+    return f"gb-fade-in {duration_ms}ms {EASE_OUT} {delay_ms}ms both"
 
 # ── All keyframe CSS combined (injected once by theme.py) ────────────────────
 ALL_KEYFRAMES = "\n".join([

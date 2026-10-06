@@ -67,6 +67,50 @@ def dry_ask(safe_on_attempt: int = 2) -> AskFn:
     return _ask
 
 
+# ── Dry mode: a scripted map reader (same convention as dry_ask) ────────────
+# The *replies* are scripted; the JSON parser, ``check_world``, the retry loop
+# and the world that reaches the simulator are the real pipeline.  The image is
+# never sent to a model in dry mode, and every surface that shows a dry reading
+# says it is scripted.
+#
+# The first reply is a *misread*: it shifts the goal one column off the grid, a
+# real failure mode (the prompt warns about drifting coordinates), so the
+# validator really rejects it and the loop really retries with the exact reason.
+DRY_VISION_MISREAD: dict = {
+    "robot": [0, 0],
+    "dir": "E",
+    "goal": [7, 8],          # off the 8×8 grid — check_world rejects this
+    "walls": [[3, 0], [3, 1], [3, 2], [3, 3], [5, 4], [5, 5], [5, 6]],
+}
+
+
+def dry_vision_world() -> dict:
+    """The world dry mode's corrected reading describes — the default world."""
+    return new_world()
+
+
+def dry_vision_ask(correct_on_attempt: int = 2) -> VisionAskFn:
+    """Scripted vision reader for dry mode: a misread, then the corrected map.
+
+    Reply 1 puts the goal outside the grid so ``map_vision.check_world`` really
+    rejects it and ``read_map`` really retries with that failure reason in the
+    prompt; reply 2 is the default world.  No model is involved and the image
+    bytes are ignored — the UI labels this reader as scripted.
+    """
+    state = {"calls": 0}
+    threshold = max(1, int(correct_on_attempt))
+
+    def _ask(prompt: str, image_bytes: bytes, mime_type: str) -> str:
+        state["calls"] += 1
+        reading = (
+            dry_vision_world() if state["calls"] >= threshold
+            else dict(DRY_VISION_MISREAD)
+        )
+        return json.dumps(reading, ensure_ascii=False)
+
+    return _ask
+
+
 # ---------------------------------------------------------------------------
 # Backend selection — text planning
 # ---------------------------------------------------------------------------
@@ -255,6 +299,8 @@ def get_vision_ask(
         return api_fn or _vision_functions()[0]
     if name == "local":
         return local_fn or _vision_functions()[1]
+    if name == DRY_BACKEND:
+        return dry_vision_ask()
     return _make_auto_vision_ask(api_fn, local_fn)
 
 

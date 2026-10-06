@@ -15,6 +15,12 @@ The Gemma Brain panel (``frontend.panels.brain``) reports the run's structured
 metadata — model, backend, loop status, attempts, latency, plan size and the
 four checks ``harness.verify_plan`` evaluated.  It never shows model
 reasoning: it is metadata, not a transcript.
+
+The Vision Lab (``frontend.panels.vision``) reads an image into a world model,
+shows the reading next to the world it proposes, validates that world
+(✓ Valid · ✓ Inside bounds · ✓ Reachable) and loads it into the simulator.  The
+verdicts are ``map_vision.check_world_report``'s; the world the simulator adopts
+is the one the validator accepted.
 """
 from __future__ import annotations
 
@@ -38,6 +44,7 @@ from frontend.components import spacing as S
 from frontend.components import typography as T
 from frontend.panels import brain
 from frontend.panels import safety
+from frontend.panels import vision
 from frontend.simulation import player as playback
 from frontend.simulation import player_view
 
@@ -73,7 +80,7 @@ inject_theme()
 MAP_LABELS = {
     "default": "Default world (new_world())",
     "sample":  "Sample 8×8 maze (dev map)",
-    "scanned": "Scanned map (MapVision)",
+    "scanned": "Scanned map (Vision Lab)",
 }
 ENGINE_BACKENDS = {"API": "api", "Local": "local", "Auto": "auto"}
 
@@ -101,15 +108,14 @@ def _init_state() -> None:
     st.session_state.setdefault("logs", [])
     st.session_state.setdefault("last_run", None)
     st.session_state.setdefault("text_result", None)
-    st.session_state.setdefault("mapvision_meta", None)
-    st.session_state.setdefault("mapvision_result", None)
-    st.session_state.setdefault("mapvision_history", [])
     st.session_state.setdefault("uploaded_map", None)
     st.session_state.setdefault("connections", None)
     st.session_state.setdefault("replay", None)
     st.session_state.setdefault("replay_autoplay", False)
     st.session_state.setdefault("safety_result", None)
     st.session_state.setdefault("safety_autoplay", False)
+    st.session_state.setdefault("vision_result", None)
+    st.session_state.setdefault("vision_loaded", False)
 
 
 _init_state()
@@ -125,19 +131,31 @@ def _reset_world() -> None:
     st.session_state.logs = []
     st.session_state.text_result = None
     st.session_state.replay = None
+    # Switching maps away from the scanned one means the Vision Lab's world is
+    # no longer what the simulator is on, so its last stage stops claiming it.
+    st.session_state.vision_loaded = False
 
 
-def _use_scanned_map() -> None:
-    scanned = copy.deepcopy(st.session_state.mapvision_result)
-    if scanned is None:
+def _load_vision_into_simulator() -> None:
+    """Adopt the validated reading as the active map (the lab's last stage).
+
+    Runs as the button's ``on_click`` callback, i.e. before the widget tree is
+    rebuilt — the sidebar's map picker can only be moved from there.  Only ever
+    called with a world the validator accepted; the simulator gets a deep copy,
+    so executing a plan later cannot write back into the lab's result.
+    """
+    lab = st.session_state.get("vision_result") or {}
+    scanned = lab.get("world")
+    if not isinstance(scanned, dict):
         return
-    st.session_state.map_source["scanned"] = scanned
+    st.session_state.map_source["scanned"] = copy.deepcopy(scanned)
     st.session_state.map_name = "scanned"
     st.session_state.map_picker = "scanned"
     st.session_state.world = copy.deepcopy(scanned)
     st.session_state.logs = []
     st.session_state.text_result = None
     st.session_state.replay = None
+    st.session_state.vision_loaded = True
 
 
 def _render_replay(replay: dict) -> None:
@@ -361,7 +379,7 @@ st.markdown(
 
 tab_names = ["Text command", "Safety Lab"]
 if HAVE_MAPVISION:
-    tab_names.append("Scan map")
+    tab_names.append("Vision Lab")
 if HAVE_BENCHMARK:
     tab_names.append("Benchmark")
 tabs = dict(zip(tab_names, st.tabs(tab_names)))
@@ -728,122 +746,312 @@ with tabs["Safety Lab"]:
             _render_safety_replay(chosen)
 
 
-# ── Scan map ──────────────────────────────────────────────────────────────
+# ── Vision Lab ────────────────────────────────────────────────────────────
 if HAVE_MAPVISION:
-    with tabs["Scan map"]:
+    with tabs["Vision Lab"]:
         st.markdown(
-            DS.section_title("Map scanner", icon="📷"), unsafe_allow_html=True
+            DS.section_title("Vision lab", icon="👁"), unsafe_allow_html=True
         )
         st.markdown(
             f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
             f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.LG)}'>"
-            "Upload a photo of an 8×8 maze. "
-            "R = robot (arrow = facing direction), G = goal, "
-            "X / dark cells = walls.</div>",
+            "An image becomes a world, and the world is checked before it can "
+            "reach the simulator. Every verdict below is the validator's "
+            "(<code>map_vision.check_world_report</code>), the same one the retry "
+            "loop uses. Dry mode scripts the reply only: the image is not sent to "
+            "a model, and the parse, the retry, the three checks and the load are "
+            "the real pipeline."
+            "</div>",
             unsafe_allow_html=True,
         )
 
         uploaded = st.file_uploader(
-            "Maze image (PNG / JPG)", type=["png", "jpg", "jpeg"]
+            "Maze image (PNG / JPG)",
+            type=["png", "jpg", "jpeg"],
+            key="vision_upload",
         )
         if uploaded is not None:
-            st.image(uploaded, caption=uploaded.name)
             st.session_state.uploaded_map = {
                 "name": uploaded.name,
                 "bytes": uploaded.getvalue(),
                 "mime": uploaded.type or "image/png",
             }
 
-        if st.button("Read map", type="primary", disabled=uploaded is None):
-            payload = st.session_state.uploaded_map
-            if payload is None:
+        dry_label = engine.backend_label("dry")
+        reader_choice = st.radio(
+            "Reader",
+            [dry_label, "Live model"],
+            key="vision_reader",
+            horizontal=True,
+        )
+        scripted = reader_choice == dry_label
+
+        # The image in hand: your upload if there is one, otherwise the built-in
+        # sample — a drawing of the default world in exactly the terms
+        # build_map_prompt describes (R with a heading arrow, G, dark X walls), so
+        # the lab demonstrates end to end without a photo and a live model still
+        # gets a real raster to read.
+        held = st.session_state.uploaded_map
+        sample_bytes = vision.sample_image_bytes(new_world())
+        if held is not None:
+            held_image = {
+                "name": held["name"],
+                "bytes": held["bytes"],
+                "mime": held["mime"],
+                "source": "uploaded",
+            }
+        elif sample_bytes is not None:
+            held_image = {
+                "name": "built-in-sample.png",
+                "bytes": sample_bytes,
+                "mime": "image/png",
+                "source": "built-in sample",
+            }
+        else:
+            held_image = None
+
+        if scripted:
+            st.caption(
+                f"Dry mode: the reader is scripted ({dry_label}), the image never "
+                f"leaves the app, the first reply is a deliberate off-grid misread "
+                f"and the second is the corrected map. Live mode reads the image "
+                f"with the sidebar engine ({engine.backend_label(backend)})."
+            )
+
+        if st.button(
+            "Read map",
+            type="primary",
+            key="vision_read",
+            disabled=held_image is None,
+        ):
+            if held_image is None:
                 st.warning("Upload an image first.")
             else:
-                with st.spinner("Gemma Vision is parsing the map…"):
-                    vision = engine.run_map_vision(
-                        payload["bytes"],
-                        payload["mime"],
-                        backend=backend,
+                with st.spinner("Gemma Vision is reading the map…"):
+                    result = engine.run_map_vision(
+                        held_image["bytes"],
+                        held_image["mime"],
+                        backend="dry" if scripted else backend,
                         max_tries=max_tries,
                     )
-                st.session_state.mapvision_meta = vision
-                st.session_state.mapvision_result = vision["world"]
-                st.session_state.mapvision_history = vision["history"]
+                st.session_state.vision_result = {
+                    "world": result["world"],
+                    "history": result["history"],
+                    "attempts": result["attempts"],
+                    "max_tries": result["max_tries"],
+                    "latency": result["latency"],
+                    "backend": result["backend"],
+                    "reader": engine.backend_label(result["backend"]),
+                    "error": result["error"],
+                    "image": {
+                        "name": held_image["name"],
+                        "size": len(held_image["bytes"]),
+                        "mime": held_image["mime"],
+                        "source": held_image["source"],
+                    },
+                }
+                st.session_state.vision_loaded = False
                 st.session_state.last_run = {
                     "source": "vision",
-                    "backend": vision["backend"],
-                    "attempts": vision["attempts"],
-                    "max_tries": vision["max_tries"],
-                    "latency": vision["latency"],
-                    "attempts_label": f"{vision['attempts']} / {vision['max_tries']}",
-                    "latency_label": f"{vision['latency']:.2f} s",
-                    "status": "Valid map" if vision["world"] is not None else "Map rejected",
+                    "backend": result["backend"],
+                    "attempts": result["attempts"],
+                    "max_tries": result["max_tries"],
+                    "latency": result["latency"],
+                    "attempts_label": f"{result['attempts']} / {result['max_tries']}",
+                    "latency_label": f"{result['latency']:.2f} s",
+                    "status": (
+                        "Valid world" if result["world"] is not None
+                        else "Map rejected"
+                    ),
                 }
+                st.rerun()
 
-        vision_meta    = st.session_state.mapvision_meta
-        vision_world   = st.session_state.mapvision_result
-        vision_history = st.session_state.mapvision_history
+        lab = st.session_state.vision_result
+        world = lab["world"] if lab else None
+        loaded = bool(st.session_state.get("vision_loaded"))
+        checks_rows = vision.checks(world)
+        passed = sum(1 for row in checks_rows if row["passed"])
 
-        if vision_meta is not None:
-            st.markdown(DS.divider(), unsafe_allow_html=True)
+        col_image, col_vision, col_world = st.columns(3, gap="large")
+
+        # ── Left: the image the reading is made from ──────────────────────
+        with col_image:
             st.markdown(
-                DS.section_title("Map analysis"), unsafe_allow_html=True
+                DS.section_title(vision.COLUMN_TITLES["image"]),
+                unsafe_allow_html=True,
             )
-            _render_telemetry(
-                {
-                    "attempts_label": f"{vision_meta['attempts']} / {vision_meta['max_tries']}",
-                    "latency_label":  f"{vision_meta['latency']:.2f} s",
-                    "backend":        vision_meta["backend"],
-                    "status": "Valid map" if vision_world is not None else "Map rejected",
-                }
-            )
-
-            if vision_world is not None:
-                world_rows = [
-                    ("Robot",      str(vision_world["robot"])),
-                    ("Direction",  vision_world["dir"]),
-                    ("Goal",       str(vision_world["goal"])),
-                    ("Walls",      str(len(vision_world["walls"]))),
-                ]
-                col1, col2 = st.columns(2)
-                col1.markdown(
-                    DS.telemetry_block(world_rows[:2]), unsafe_allow_html=True
-                )
-                col2.markdown(
-                    DS.telemetry_block(world_rows[2:]), unsafe_allow_html=True
-                )
+            if held_image is None:
                 st.markdown(
-                    DS.status_chip("World accepted", "success"),
+                    vision.column_html(
+                        "image",
+                        f"<div style='font-family:{T.FONT_MONO};"
+                        f"font-size:{T.SIZE_SM}px;color:{C.TEXT_MUTED}'>"
+                        "No image in hand. Upload a maze photo — the built-in "
+                        "sample needs Pillow, which is not installed here."
+                        "</div>",
+                    ),
                     unsafe_allow_html=True,
                 )
-                st.markdown(DS.section_title("Parsed grid"), unsafe_allow_html=True)
-                st.markdown(ui_helpers.grid_legend_html(), unsafe_allow_html=True)
-                st.markdown(
-                    ui_helpers.world_grid_html(vision_world),
-                    unsafe_allow_html=True,
-                )
-                st.button("Use this map", on_click=_use_scanned_map)
             else:
-                reason = (
-                    vision_meta.get("error")
-                    or (
-                        vision_history[-1]["feedback"]
-                        if vision_history
-                        else "the backend provided no further detail"
+                st.image(held_image["bytes"], width="stretch")
+                if lab is not None and lab["image"]["name"] != held_image["name"]:
+                    st.caption(
+                        f"The reading shown was made from {lab['image']['name']} — "
+                        "read the image in hand to replace it."
                     )
-                )
                 st.markdown(
-                    DS.status_chip("Map rejected", "error"), unsafe_allow_html=True
+                    vision.column_html(
+                        "image",
+                        vision.facts_html(
+                            vision.image_rows(
+                                name=held_image["name"],
+                                size=len(held_image["bytes"]),
+                                mime=held_image["mime"],
+                                source=(
+                                    "uploaded photo"
+                                    if held_image["source"] == "uploaded"
+                                    else "drawn from the default world — not a photo"
+                                ),
+                            )
+                        )
+                        + f"<div style='margin-top:{S.px(S.SM)};"
+                        f"font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
+                        f"color:{C.TEXT_MUTED}'>"
+                        + (
+                            "Dry mode never sends these bytes to a model."
+                            if scripted
+                            else "Live mode sends these exact bytes to the model."
+                        )
+                        + "</div>",
+                    ),
+                    unsafe_allow_html=True,
                 )
-                st.error(reason)
 
-            st.markdown(DS.section_title("Vision attempts"), unsafe_allow_html=True)
-            _render_attempt_cards(
-                ui_helpers.attempt_cards(vision_history),
-                reply_label="Vision response",
-                ok_message="✓ Valid world",
+        # ── Middle: what Gemma Vision returned, verbatim ──────────────────
+        with col_vision:
+            st.markdown(
+                DS.section_title(vision.COLUMN_TITLES["vision"]),
+                unsafe_allow_html=True,
             )
+            if lab is None:
+                body = (
+                    f"<div style='font-family:{T.FONT_MONO};"
+                    f"font-size:{T.SIZE_SM}px;color:{C.TEXT_MUTED}'>"
+                    "No reading yet — the raw reply, the world it proposes and the "
+                    "verdict on it appear here.</div>"
+                )
+            else:
+                body = vision.meta_html(
+                    lab["reader"],
+                    attempts=lab["attempts"],
+                    max_tries=lab["max_tries"],
+                    latency=lab["latency"],
+                    scripted=lab["backend"] == engine.DRY_BACKEND,
+                ) + vision.readings_html(vision.readings(lab["history"]))
+                body += (
+                    f"<div style='margin-top:{S.px(S.SM)}'>"
+                    + (
+                        DS.status_chip("World accepted", "success")
+                        if world is not None
+                        else DS.status_chip("Map rejected", "error")
+                    )
+                    + "</div>"
+                )
+            st.markdown(vision.column_html("vision", body), unsafe_allow_html=True)
+            if lab is not None and world is None and lab["error"]:
+                st.error(lab["error"])
 
+        # ── Right: the world model the reading proposes ───────────────────
+        with col_world:
+            st.markdown(
+                DS.section_title(vision.COLUMN_TITLES["world"]),
+                unsafe_allow_html=True,
+            )
+            body = (
+                DS.section_title("Validation")
+                + vision.checks_html(checks_rows)
+                + f"<div style='height:{S.px(S.LG)}'></div>"
+                + vision.facts_html(vision.world_rows(world))
+            )
+            if world is not None:
+                # The grid is drawn at its designed cell size; in a narrow column
+                # it scrolls inside its own box rather than stretching the row.
+                body += (
+                    f"<div style='height:{S.px(S.LG)}'></div>"
+                    + ui_helpers.grid_legend_html()
+                    + "<div style='overflow-x:auto'>"
+                    + ui_helpers.world_grid_html(world, cell_px=S.CELL_SIZE)
+                    + "</div>"
+                )
+            st.markdown(vision.column_html("world", body), unsafe_allow_html=True)
+
+        # ── Load into simulator ───────────────────────────────────────────
+        if world is None:
+            st.button("Load into simulator", key="vision_load", disabled=True)
+            st.caption(
+                "Nothing to load: no reading has passed validation yet."
+            )
+        else:
+            # A callback, not an inline call: the sidebar's map picker is already
+            # instantiated by the time this renders, and only a callback may
+            # move it.
+            st.button(
+                "Load into simulator",
+                key="vision_load",
+                type="primary",
+                on_click=_load_vision_into_simulator,
+            )
+            if loaded:
+                st.markdown(
+                    DS.status_chip(
+                        f"Loaded — the simulator is on {_map_label('scanned')}",
+                        "success",
+                    ),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(
+                    "The reading is validated but not loaded: the simulator is "
+                    f"still on {_map_label(st.session_state.map_name)}."
+                )
+
+        # ── Animate: Image → World → Simulator ────────────────────────────
+        st.markdown(DS.section_title("Pipeline"), unsafe_allow_html=True)
+        st.caption(
+            "Each stage lights because the step itself happened, not on a timer: "
+            "an image is in hand, a reading passed the checks, that world is the "
+            "active map."
+        )
+        st.markdown(
+            vision.flow_html(
+                vision.flow_stages(
+                    has_image=held_image is not None,
+                    world_ok=world is not None,
+                    loaded=loaded,
+                    image_detail=(
+                        f"{held_image['name']} · "
+                        f"{len(held_image['bytes']) / 1024:.1f} kB"
+                        if held_image else ""
+                    ),
+                    world_detail=(
+                        f"reading passed {passed} of {len(checks_rows)} checks "
+                        f"on attempt {lab['attempts']}"
+                        if lab is not None and world is not None else ""
+                    ),
+                    sim_detail=f"active map: {_map_label(st.session_state.map_name)}",
+                )
+            ),
+            unsafe_allow_html=True,
+        )
+
+        # ── Every attempt, with the prompt the retry carried ──────────────
+        if lab is not None:
+            with st.expander("Vision attempts"):
+                _render_attempt_cards(
+                    ui_helpers.attempt_cards(lab["history"]),
+                    reply_label="Vision response",
+                    ok_message="✓ Valid world",
+                )
 
 # ── Benchmark ─────────────────────────────────────────────────────────────
 if HAVE_BENCHMARK:

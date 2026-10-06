@@ -4,6 +4,7 @@ No network: every model call is a fake.
 """
 import copy
 import json
+import os
 
 import pytest
 
@@ -485,3 +486,111 @@ def test_end_to_end_mapvision_world_flows_into_text_execution():
     assert outcome["world"]["goal"] == [7, 7]
     assert outcome["world"]["walls"] == before["walls"]
     assert scanned_world == before, "the scanned world must not be rebuilt or mutated"
+
+
+# ---------------------------------------------------------------------------
+# Dry vision reader — scripted replies, real pipeline
+# ---------------------------------------------------------------------------
+
+def test_get_vision_ask_dry_never_touches_a_model(monkeypatch):
+    """Regression: dry must not fall through to the real vision backends.
+
+    Patches the module that defines the selector (the ``engine`` shim re-exports
+    the public surface only), so any fallthrough to a real vision call would hit
+    this stub instead of the network.
+    """
+    from frontend.panels import engine as engine_impl
+
+    def explode(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("dry vision must not call a model")
+
+    monkeypatch.setattr(engine_impl, "_vision_functions", explode)
+    ask = engine.get_vision_ask("dry")
+
+    # The scripted reader answers both calls itself: the misread, then the map.
+    first = json.loads(ask("read the maze", b"\x00", "image/png"))
+    second = json.loads(ask("read the maze", b"\x00", "image/png"))
+    assert first == engine.DRY_VISION_MISREAD
+    assert second == new_world()
+
+
+def test_dry_vision_world_is_the_default_world_it_claims():
+    assert engine.dry_vision_world() == new_world()
+
+
+def test_dry_vision_scripts_a_misread_then_the_corrected_map():
+    ask = engine.dry_vision_ask()
+    first = json.loads(ask("p", b"\x00", "image/png"))
+    second = json.loads(ask("p", b"\x00", "image/png"))
+
+    assert first == engine.DRY_VISION_MISREAD
+    assert second == new_world()
+    assert check_world(first)[0] is False        # a real rejection
+    assert check_world(second)[0] is True
+
+
+def test_each_dry_vision_ask_starts_the_script_over():
+    ask_a = engine.dry_vision_ask()
+    ask_b = engine.dry_vision_ask()
+    assert ask_a("p", b"", "image/png") == ask_b("p", b"", "image/png")
+
+
+def test_dry_vision_can_be_scripted_to_agree_on_the_first_reading():
+    ask = engine.dry_vision_ask(correct_on_attempt=1)
+    assert json.loads(ask("p", b"", "image/png")) == new_world()
+
+
+def test_run_map_vision_dry_is_labelled_and_returns_a_validated_world():
+    result = engine.run_map_vision(b"\x00", "image/png", backend="dry", max_tries=2)
+
+    assert result["backend"] == "dry"
+    assert engine.backend_label(result["backend"]) == "Scripted (dry mode)"
+    assert result["attempts"] == 2
+    assert result["world"] == new_world()
+    assert result["error"] is None
+    assert result["latency"] >= 0.0
+
+
+def test_the_dry_misread_is_rejected_by_the_real_validator_and_repaired():
+    result = engine.run_map_vision(b"\x00", "image/png", backend="dry", max_tries=2)
+
+    first, second = result["history"]
+    assert first["ok"] is False
+    assert "outside the 8×8 grid" in first["feedback"]
+    assert second["ok"] is True
+    # The retry really carried the validator's own sentence.
+    assert "outside the 8×8 grid" in second["prompt"]
+
+
+def test_a_dry_misread_with_no_retry_budget_reports_the_rejection():
+    result = engine.run_map_vision(b"\x00", "image/png", backend="dry", max_tries=1)
+
+    assert result["world"] is None
+    assert result["attempts"] == 1
+    assert "outside the 8×8 grid" in result["error"]
+
+
+def test_dry_vision_ignores_the_image_bytes_it_was_handed():
+    """Nothing is read from the image in dry mode — the same reading either way."""
+    blank = engine.run_map_vision(b"\x00", "image/png", backend="dry", max_tries=2)
+    noisy = engine.run_map_vision(os.urandom(2048), "image/jpeg", backend="dry",
+                                  max_tries=2)
+    assert blank["world"] == noisy["world"]
+    assert blank["history"][0]["reply"] == noisy["history"][0]["reply"]
+
+
+def test_dry_vision_asks_are_called_with_the_prompt_and_the_image(monkeypatch):
+    """The reader is asked exactly like a real one: prompt, bytes, mime type."""
+    seen = []
+
+    def spy(prompt, image_bytes, mime_type):
+        seen.append((prompt, image_bytes, mime_type))
+        return json.dumps(new_world())
+
+    result = engine.run_map_vision(b"abc", "image/png", ask_vision=spy, max_tries=1)
+    assert result["world"] == new_world()
+    assert len(seen) == 1
+    prompt, image_bytes, mime_type = seen[0]
+    assert "grid" in prompt.lower()
+    assert image_bytes == b"abc"
+    assert mime_type == "image/png"

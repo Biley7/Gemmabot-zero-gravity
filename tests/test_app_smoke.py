@@ -265,3 +265,82 @@ def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
     panel = next(element.value for element in at.markdown if "Gemma Brain" in element.value)
     assert panel.count("data-ok='none'") == 4
     assert "data-ok='true'" not in panel
+
+
+def test_vision_lab_reads_a_map_validates_it_and_loads_it_into_the_simulator():
+    """Phase 6: image → world model → simulator, through the real app."""
+    from gemmabot.simulator import new_world
+
+    at = _run_app()
+    # The tab it supersedes is gone: one reader, not two.
+    assert "Map scanner" not in "\n".join(
+        element.value for element in at.markdown
+    )
+
+    _button(at, "Read map").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    lab = at.session_state["vision_result"]
+    assert lab["backend"] == "dry"
+    assert lab["reader"] == "Scripted (dry mode)"
+    assert lab["attempts"] == 2
+    assert lab["world"] == new_world()
+    # The first reading really was rejected, by the real validator.
+    assert [record["ok"] for record in lab["history"]] == [False, True]
+    assert "outside the 8×8 grid" in lab["history"][0]["feedback"]
+    assert at.session_state["last_run"]["source"] == "vision"
+    assert at.session_state["vision_loaded"] is False
+
+    # Three columns, three checks (all passing on the accepted reading), and the
+    # animated flow waiting on the load.
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "Vision lab" in rendered
+    assert rendered.count("data-column=") == 3
+    assert "data-column='image'" in rendered
+    assert "data-column='vision'" in rendered
+    assert "data-column='world'" in rendered
+    assert rendered.count("data-check=") == 3
+    assert "data-check='valid' data-ok='true'" in rendered
+    assert "data-check='in_bounds' data-ok='true'" in rendered
+    assert "data-check='reachable' data-ok='true'" in rendered
+    assert "World it proposed" in rendered        # the reading, verbatim
+    assert "data-attempt='1'" in rendered
+    assert "data-stage='image' data-state='done'" in rendered
+    assert "data-stage='world' data-state='done'" in rendered
+    assert "data-stage='simulator' data-state='active'" in rendered
+    # The map is still the default: reading a map does not adopt it.
+    assert at.session_state["world"] == new_world()
+
+    _button(at, "Load into simulator").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["world"] == new_world()
+    assert at.session_state["map_name"] == "scanned"
+    assert at.session_state["vision_loaded"] is True
+    assert at.session_state["map_source"]["scanned"] == new_world()
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "data-stage='simulator' data-state='done'" in rendered
+    assert rendered.count("data-stage=") == 3
+    # The loaded world is a copy: executing on it cannot write back into the lab.
+    assert at.session_state["world"] is not lab["world"]
+
+
+def test_vision_lab_shows_unproven_checks_before_any_reading():
+    at = _run_app()
+    assert not at.exception, [element.value for element in at.exception]
+    assert at.session_state["vision_result"] is None
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert rendered.count("data-check=") == 3
+    assert rendered.count("data-ok='none'") == 3      # never shown as a pass
+    assert "no validated reading yet" in rendered
+    # An image is already in hand (the built-in sample), so World is the stage
+    # waiting on real work and the simulator is still pending.
+    assert "data-stage='image' data-state='done'" in rendered
+    assert "data-stage='world' data-state='active'" in rendered
+    assert "data-stage='simulator' data-state='pending'" in rendered
+    # With nothing validated there is nothing to load.
+    load = _button(at, "Load into simulator")
+    assert load.disabled is True
+    assert at.session_state["vision_loaded"] is False
