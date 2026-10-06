@@ -128,10 +128,12 @@ def _used_backend_label(requested: str, ask_fn: Callable) -> str:
     return state.get("used") or "auto"
 
 
-# Display name per resolved backend label ('api' / 'ollama' / 'auto').
+# Display name per backend label.  ``local`` is the UI alias of ``ollama``
+# (see ``_normalise``) and shares its label so the two never diverge.
 BACKEND_DISPLAY = {
     "api": "API (Gemini)",
     "ollama": "Ollama (local)",
+    "local": "Ollama (local)",
     "auto": "Auto (API → Ollama)",
 }
 
@@ -139,7 +141,8 @@ BACKEND_DISPLAY = {
 def backend_label(backend: str) -> str:
     """Display name for a resolved backend label — ``'ollama'`` → ``'Ollama (local)'``.
 
-    An unrecognised label is shown verbatim: this never guesses.
+    ``'local'`` is the UI alias of ``'ollama'`` and shares its label.  An
+    unrecognised label is shown verbatim: this never guesses.
     """
     name = (backend or "").strip().lower()
     return BACKEND_DISPLAY.get(name, backend or "—")

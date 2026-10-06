@@ -223,6 +223,11 @@ def test_backend_labels_and_models_come_from_the_real_configuration():
     assert engine.backend_model("local") == OLLAMA_MODEL
     # An unresolved auto backend must not claim a model.
     assert engine.backend_model("auto") is None
+    # 'local' is the UI alias of 'ollama': label and model must agree with it.
+    assert engine.backend_label("local") == engine.backend_label("ollama")
+    assert engine.backend_label("LOCAL ") == "Ollama (local)"
+    # Anything else is shown verbatim rather than guessed at.
+    assert engine.backend_label("weird") == "weird"
 
 
 def test_run_plan_auto_reports_backend_that_actually_answered():
