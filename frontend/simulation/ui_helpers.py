@@ -213,8 +213,14 @@ def _hero_cell(
     is_current: bool,
     direction: str = "E",
     cell_px: int = S.CELL_SIZE_HERO,
+    is_danger: bool = False,
 ) -> str:
-    """Return one hero-grid cell div with full styling."""
+    """Return one hero-grid cell div with full styling.
+
+    *is_danger* marks the cell a plan was refused entry to (the Safety Lab's
+    collision location).  It outranks the wall style so the obstacle that
+    blocked the plan is unmistakable.
+    """
     cs = cell_px
     icon_px = int(cs * 0.52)
     r = S.RADIUS_SM
@@ -230,6 +236,11 @@ def _hero_cell(
         border  = C.SUCCESS_BORDER
         shadow  = "none"
         extra   = f"animation:gb-goal-glow 2.8s {A.EASE_INOUT} infinite;"
+    elif is_danger:
+        bg      = C.ERROR_BG
+        border  = C.ERROR
+        shadow  = f"0 0 0 1px {C.ERROR}55, inset 0 0 10px {C.ERROR}22"
+        extra   = f"animation:{A.animation_danger_pulse()};"
     elif is_wall:
         bg      = C.GRID_WALL
         border  = C.GRID_WALL_EDGE
@@ -252,7 +263,7 @@ def _hero_cell(
         extra   = ""
 
     # ── Hover class — injected via CSS, not inline (no JS needed) ─────────
-    hover_cls = "" if is_wall else " gb-hero-cell-hover"
+    hover_cls = "" if (is_wall or is_danger) else " gb-hero-cell-hover"
 
     base_style = (
         f"width:{cs}px;height:{cs}px;"
@@ -272,6 +283,10 @@ def _hero_cell(
         icon_svg = svg_tmpl.format(fg=C.ACCENT_BLUE, stroke=C.ACCENT_BLUE_DIM)
     elif is_goal:
         icon_svg = GOAL_SVG.format(fg=C.SUCCESS)
+    elif is_danger:
+        # Keep the obstacle's own texture, tinted red: you see exactly which
+        # wall the plan was refused entry to.
+        icon_svg = (WALL_SVG if is_wall else PATH_SVG).format(fg=C.ERROR)
     elif is_wall:
         icon_svg = WALL_SVG.format(fg=C.TEXT_MUTED)
     elif is_path or is_current:
@@ -318,6 +333,7 @@ def world_grid_html(
     path: list[list[int]] | None = None,
     current_step: int = -1,
     cell_px: int = S.CELL_SIZE_HERO,
+    danger_cell: list[int] | None = None,
 ) -> str:
     """Hero grid rendered from the full world dict.
 
@@ -333,8 +349,12 @@ def world_grid_html(
         animation frame. Gets the step-flash animation.
     cell_px:
         Override cell size in pixels.
+    danger_cell:
+        Optional [x, y] the verifier refused a plan entry to (a collision or
+        grid edge). Marked in the error colour with a slow red pulse.
     """
     path = path or []
+    danger = tuple(int(v) for v in danger_cell) if danger_cell else None
     robot   = world.get("robot", [0, 0])
     goal    = world.get("goal",  [7, 7])
     walls   = world.get("walls", [])
@@ -391,6 +411,7 @@ def world_grid_html(
                 and [x, y] == current_step
                 and not is_robot
             )
+            is_danger = coord == danger and not is_robot and not is_goal
             parts.append(
                 _hero_cell(
                     x, y,
@@ -401,6 +422,7 @@ def world_grid_html(
                     is_current=is_current,
                     direction=dirn,
                     cell_px=cs,
+                    is_danger=is_danger,
                 )
             )
             if x < SIZE - 1:
@@ -445,10 +467,13 @@ def grid_legend_html() -> str:
     path_icon   = PATH_SVG.format(fg=C.RUNNING)
     empty_icon  = ""
 
+    danger_icon = WALL_SVG.format(fg=C.ERROR)
+
     items = [
         _swatch(C.GRID_ROBOT,  C.GRID_CURRENT_BORDER, robot_icon, "Robot"),
         _swatch(C.GRID_GOAL,   C.SUCCESS_BORDER,       goal_icon,  "Goal"),
         _swatch(C.GRID_WALL,   C.GRID_WALL_EDGE,        wall_icon,  "Obstacle"),
+        _swatch(C.ERROR_BG,    C.ERROR,                 danger_icon, "Collision"),
         _swatch(C.GRID_PATH,   C.GRID_PATH_BORDER,      path_icon,  "Path"),
         _swatch(C.GRID_EMPTY,  C.GRID_BORDER,           empty_icon, "Empty"),
     ]

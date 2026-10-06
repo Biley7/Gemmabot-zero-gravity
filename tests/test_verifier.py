@@ -58,6 +58,46 @@ def test_verify_plan_reports_the_four_checks_in_a_stable_order():
     assert _verdict(result) == [True, True, True, True]
 
 
+def test_a_passing_check_carries_no_failure_data():
+    result = verify_plan(new_world(), GOOD_PLAN)
+
+    assert all(entry["data"] == {} for entry in result["checks"])
+
+
+def test_a_collision_reports_the_cell_and_action_it_refused():
+    result = verify_plan(new_world(), WALL_PLAN)
+    collision = _checks(result)["no_collisions"]
+
+    assert collision["data"]["cell"] == [3, 0]
+    assert collision["data"]["action_index"] == 1
+    assert collision["data"]["action"] == {"cmd": "forward", "steps": 5}
+    # The other checks have nothing to report.
+    assert _checks(result)["in_bounds"]["data"] == {}
+
+
+def test_an_out_of_bounds_move_reports_its_own_cell():
+    result = verify_plan(new_world(), OFF_GRID_PLAN)
+    bounds = _checks(result)["in_bounds"]
+
+    assert bounds["data"]["cell"] == [0, -1]
+    assert bounds["data"]["action_index"] == 2
+
+
+def test_an_unreachable_goal_reports_where_the_robot_stopped():
+    result = verify_plan(new_world(), [{"cmd": "forward", "steps": 2}])
+    goal = _checks(result)["goal_reachable"]
+
+    assert goal["data"] == {"robot": [2, 0], "goal": [6, 5]}
+
+
+def test_an_invalid_action_reports_which_action_failed():
+    result = verify_plan(new_world(), [{"cmd": "forward"}, {"cmd": "fly"}])
+    invalid = _checks(result)["valid_actions"]
+
+    assert invalid["data"]["action_index"] == 2
+    assert invalid["data"]["action"] == {"cmd": "fly"}
+
+
 def test_every_check_carries_a_non_empty_detail():
     result = verify_plan(new_world(), GOOD_PLAN)
 
@@ -240,6 +280,15 @@ def test_dry_run_and_verify_plan_agree_on_every_case():
             assert result["reason"] == reason, (world, actions)
         else:
             assert result["reason"] == "ok"
+
+
+def test_an_unproven_check_carries_no_failure_data():
+    result = verify_plan(new_world(), [{"cmd": "fly"}])
+    checks = _checks(result)
+
+    assert checks["valid_actions"]["data"]["action_index"] == 1
+    assert checks["in_bounds"]["data"] == {}
+    assert checks["goal_reachable"]["data"] == {}
 
 
 def test_a_passing_result_means_every_check_passed():

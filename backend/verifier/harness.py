@@ -60,8 +60,17 @@ def _action_phrase(count: int) -> str:
 
 
 def _blank_checks(detail: str) -> dict[str, dict]:
-    """One unproven (``ok=None``) entry per check, all carrying *detail*."""
-    return {check_id: {"ok": None, "detail": detail} for check_id, _ in VERIFICATION_CHECKS}
+    """One unproven (``ok=None``) entry per check, all carrying *detail*.
+
+    ``data`` holds the structured facts behind a *failing* check (the cell the
+    robot tried to enter, the action index, the position it stopped at) so a UI
+    can point at them without parsing the human-readable *detail*.  It is empty
+    for a check that passed or was never proven.
+    """
+    return {
+        check_id: {"ok": None, "detail": detail, "data": {}}
+        for check_id, _ in VERIFICATION_CHECKS
+    }
 
 
 def _pack(checks: dict[str, dict], reason: str) -> dict[str, Any]:
@@ -76,9 +85,21 @@ def _pack(checks: dict[str, dict], reason: str) -> dict[str, Any]:
                 "label": label,
                 "ok": checks[check_id]["ok"],
                 "detail": checks[check_id]["detail"],
+                "data": checks[check_id].get("data") or {},
             }
             for check_id, label in VERIFICATION_CHECKS
         ],
+    }
+
+
+def _invalid_action_record(scan: dict, actions: list) -> dict:
+    """The ``valid_actions`` failure record for the action *scan* rejected."""
+    index = scan["index"]
+    action = actions[index - 1] if 0 < index <= len(actions) else None
+    return {
+        "ok": False,
+        "detail": scan["detail"],
+        "data": {"action_index": index, "action": action},
     }
 
 
@@ -217,6 +238,11 @@ def verify_plan(world: dict[str, Any], actions: list[dict]) -> dict[str, Any]:
                 if reached
                 else f"robot is at {world['robot']}, goal is at {world['goal']}"
             ),
+            "data": (
+                {}
+                if reached
+                else {"robot": list(world["robot"]), "goal": list(world["goal"])}
+            ),
         }
         reason = (
             "ok"
@@ -236,7 +262,7 @@ def verify_plan(world: dict[str, Any], actions: list[dict]) -> dict[str, Any]:
         checks["valid_actions"] = (
             {"ok": True, "detail": f"{_action_phrase(len(actions))}, all simulator commands"}
             if scan["index"] is None
-            else {"ok": False, "detail": scan["detail"]}
+            else _invalid_action_record(scan, actions)
         )
         return _pack(checks, reason)
 
@@ -244,10 +270,10 @@ def verify_plan(world: dict[str, Any], actions: list[dict]) -> dict[str, Any]:
     checks = _blank_checks("not evaluated")
     scan = _scan(actions)
     if scan["index"] is not None:
-        checks["valid_actions"] = {"ok": False, "detail": scan["detail"]}
+        checks["valid_actions"] = _invalid_action_record(scan, actions)
         unproven = f"not evaluated — {scan['detail']}"
         for check_id in ("in_bounds", "no_collisions", "goal_reachable"):
-            checks[check_id] = {"ok": None, "detail": unproven}
+            checks[check_id] = {"ok": None, "detail": unproven, "data": {}}
         # Ask the simulator for the exact reason the executor would report.
         walk = _walk(world, actions)
         return _pack(checks, walk["reason"] or scan["detail"])
@@ -265,38 +291,45 @@ def verify_plan(world: dict[str, Any], actions: list[dict]) -> dict[str, Any]:
         checks["in_bounds"] = {
             "ok": True,
             "detail": f"no move left the {SIZE}×{SIZE} grid",
+            "data": {},
         }
         checks["no_collisions"] = {
             "ok": True,
             "detail": f"no move entered an obstacle ({len(world.get('walls') or [])} wall cells)",
+            "data": {},
         }
     elif walk["outcome"] == "blocked":
         blocked = walk["blocked"]
         cell = blocked["cell"]
         index = blocked["index"]
+        facts = {"action_index": index, "cell": list(cell), "action": blocked["action"]}
         inside = 0 <= cell[0] < SIZE and 0 <= cell[1] < SIZE
         if inside:
             checks["in_bounds"] = {
                 "ok": True,
                 "detail": f"no move left the {SIZE}×{SIZE} grid",
+                "data": {},
             }
             checks["no_collisions"] = {
                 "ok": False,
                 "detail": f"action {index} would enter the obstacle at {cell}",
+                "data": facts,
             }
         else:
             checks["in_bounds"] = {
                 "ok": False,
                 "detail": f"action {index} would leave the {SIZE}×{SIZE} grid at {cell}",
+                "data": facts,
             }
             checks["no_collisions"] = {
                 "ok": True,
                 "detail": "no move entered an obstacle",
+                "data": {},
             }
     else:  # "fault" — the plan never ran, so nothing was proven
         unproven = f"not evaluated — {walk['reason']}"
         for check_id in ("in_bounds", "no_collisions", "goal_reachable"):
-            checks[check_id] = {"ok": None, "detail": unproven}
+            checks[check_id] = {"ok": None, "detail": unproven, "data": {}}
         return _pack(checks, walk["reason"])
 
     reached = reached_goal(sim)
@@ -306,6 +339,11 @@ def verify_plan(world: dict[str, Any], actions: list[dict]) -> dict[str, Any]:
             f"the plan ends on the goal at {sim['goal']}"
             if reached
             else f"the robot ends at {sim['robot']}, the goal is at {sim['goal']}"
+        ),
+        "data": (
+            {}
+            if reached
+            else {"robot": list(sim["robot"]), "goal": list(sim["goal"])}
         ),
     }
     reason = walk["reason"] or (

@@ -17,6 +17,7 @@ calls, times and packages their real results.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import time
 from typing import Any, Callable
@@ -28,21 +29,61 @@ AskFn = Callable[[str, dict], str]
 VisionAskFn = Callable[[str, bytes, str], str]
 AttemptFn = Callable[[dict], None]
 
+# ── Dry mode: a scripted planner (same convention as benchmark --dry) ────────
+# ``backend="dry"`` never touches a model.  The *replies* are scripted; the
+# harness loop, the verifier, the collision and the execution that follow are
+# the real pipeline.  The plans are calibrated to new_world() — the default
+# world — and labelled as scripted everywhere they surface.
+DRY_BACKEND = "dry"
+DRY_HAZARD_PLAN: list[dict] = [{"cmd": "forward", "steps": 7}]
+DRY_SAFE_PLAN: list[dict] = [
+    {"cmd": "turn_right"},
+    {"cmd": "forward", "steps": 7},
+    {"cmd": "turn_left"},
+    {"cmd": "forward", "steps": 6},
+    {"cmd": "turn_left"},
+    {"cmd": "forward", "steps": 2},
+]
+
+
+def dry_ask(safe_on_attempt: int = 2) -> AskFn:
+    """Scripted planner for dry mode: a naive plan, then the corrected route.
+
+    Reply 1 walks straight into the wall column at x=3 of the default world so
+    the repair loop has a real failure to repair; reply 2 is the verified route
+    to the goal.  No model is involved — the UI says so.
+    """
+    state = {"calls": 0}
+    threshold = max(1, int(safe_on_attempt))
+
+    def _ask(instruction: str, world: dict) -> str:
+        state["calls"] += 1
+        plan = DRY_SAFE_PLAN if state["calls"] >= threshold else DRY_HAZARD_PLAN
+        return json.dumps(
+            {"thought": "scripted dry-mode planner", "actions": plan},
+            ensure_ascii=False,
+        )
+
+    return _ask
+
 
 # ---------------------------------------------------------------------------
 # Backend selection — text planning
 # ---------------------------------------------------------------------------
 
 def _normalise(backend_name: str) -> str:
-    """Map UI/CLI backend names onto ``api`` / ``local`` / ``auto``."""
+    """Map UI/CLI backend names onto ``api`` / ``local`` / ``auto`` / ``dry``."""
     name = (backend_name or "auto").strip().lower()
     if name in ("api", "gemini", "google"):
         return "api"
     if name in ("local", "ollama", "gemma"):
         return "local"
-    if name == "auto":
-        return "auto"
-    raise ValueError(f"unknown backend {backend_name!r}; expected one of ('api', 'local', 'auto')")
+    if name in ("auto", DRY_BACKEND):
+        return name
+    raise ValueError(
+        f"unknown backend {backend_name!r}; expected one of "
+        f"('api', 'local', 'auto', '{DRY_BACKEND}')"
+    )
 
 
 def _planner_functions() -> tuple[Callable, Callable]:
@@ -114,6 +155,8 @@ def get_ask(
         return api_fn or _planner_functions()[0]
     if name == "local":
         return local_fn or _planner_functions()[1]
+    if name == DRY_BACKEND:
+        return dry_ask()
     return _make_auto_ask(api_fn, local_fn)
 
 
@@ -124,6 +167,8 @@ def _used_backend_label(requested: str, ask_fn: Callable) -> str:
         return "api"
     if name == "local":
         return "ollama"
+    if name == DRY_BACKEND:
+        return DRY_BACKEND
     state = getattr(ask_fn, "backend_state", None) or {}
     return state.get("used") or "auto"
 
@@ -135,6 +180,7 @@ BACKEND_DISPLAY = {
     "ollama": "Ollama (local)",
     "local": "Ollama (local)",
     "auto": "Auto (API → Ollama)",
+    "dry": "Scripted (dry mode)",
 }
 
 
@@ -152,7 +198,8 @@ def backend_model(backend: str) -> str | None:
     """The model id ``gemmabot.config`` holds for *backend*, or ``None``.
 
     The ids are the real configuration values.  ``auto`` is only resolved once
-    a reply has arrived, so an unresolved ``auto`` claims no model.
+    a reply has arrived, so an unresolved ``auto`` claims no model, and dry
+    mode uses no model at all.
     """
     from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL
 

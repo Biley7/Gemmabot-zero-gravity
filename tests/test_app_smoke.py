@@ -182,6 +182,44 @@ def test_run_plan_shows_the_gemma_brain_metadata(monkeypatch):
     assert "Model reply" not in panel
 
 
+def test_safety_lab_dry_run_builds_the_verifier_and_repair_timeline():
+    """Phase 5: the lab runs the real loop; dry mode scripts only the replies."""
+    at = _run_app()
+    _button(at, "Run safety check").click().run()
+
+    assert not at.exception, [element.value for element in at.exception]
+    lab = at.session_state["safety_result"]
+    assert lab["planner"] == "Scripted (dry mode)"
+
+    # ✓ Proposal → ✕ Collision → ↻ Repair → ✓ Proposal → ✓ Safe
+    assert [stage["kind"] for stage in lab["stages"]] == [
+        "proposal", "collision", "repair", "proposal", "safe"
+    ]
+    assert lab["summary"]["collision"]["cell"] == [3, 0]
+    assert lab["summary"]["collision"]["attempt"] == 1
+    assert lab["summary"]["repairs"] == {"count": 1, "attempts": [1], "label": "1 repair"}
+    assert lab["summary"]["success"]["ok"] is True
+    assert lab["summary"]["success"]["attempt"] == 2
+
+    # Both attempts are replayable, from the simulator's own timelines.
+    assert [item["attempt"] for item in lab["replays"]] == [1, 2]
+    assert lab["replays"][0]["halted"] == "blocked"
+    assert lab["replays"][1]["reached"] is True
+
+    # The lab demonstrates on its own world: the main board is untouched.
+    assert at.session_state["world"]["robot"] == [0, 0]
+    assert at.session_state["last_run"]["source"] == "safety"
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "Safety lab" in rendered
+    assert rendered.count("gb-safety-chip") == 5
+    assert rendered.count("gb-safety-fact") == 4
+    assert "data-cell='[3, 0]'" in rendered
+    # The refused cell is marked on the map the lab draws.
+    assert "gb-danger-pulse" in rendered
+    assert "Gemma Plan" in rendered
+
+
 def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
     import engine
 

@@ -1,6 +1,7 @@
 """Tests for ui_helpers.py — pure presentation helpers, no Streamlit, no network."""
 import json
 
+from frontend.components import colors as C
 from gemmabot.simulator import new_world, render
 
 import ui_helpers
@@ -48,6 +49,37 @@ def test_grid_html_handles_empty_rows():
 
 def _plan_reply(actions):
     return json.dumps({"thought": "t", "actions": actions})
+
+
+def test_world_grid_marks_the_cell_a_plan_was_refused():
+    from gemmabot.simulator import new_world
+
+    plain = ui_helpers.world_grid_html(new_world())
+    marked = ui_helpers.world_grid_html(
+        new_world(), path=[[0, 0], [1, 0], [2, 0]], danger_cell=[3, 0]
+    )
+
+    assert marked.count("class='gb-hero-cell") == 64
+    assert "gb-danger-pulse" in marked
+    assert C.ERROR in marked
+    # Without a danger cell the grid is unchanged.
+    assert "gb-danger-pulse" not in plain
+    assert C.ERROR not in plain
+
+
+def test_world_grid_ignores_a_danger_cell_that_is_not_a_cell():
+    from gemmabot.simulator import new_world
+
+    html = ui_helpers.world_grid_html(new_world(), danger_cell=None)
+
+    assert "gb-danger-pulse" not in html
+
+
+def test_the_legend_explains_every_cell_state():
+    html = ui_helpers.grid_legend_html()
+
+    for label in ("Robot", "Goal", "Obstacle", "Collision", "Path", "Empty"):
+        assert label in html
 
 
 def test_attempt_cards_shapes_real_harness_history():

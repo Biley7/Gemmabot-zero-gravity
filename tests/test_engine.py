@@ -9,6 +9,7 @@ import pytest
 
 import engine
 from gemmabot.map_vision import check_world
+from gemmabot.simulator import new_world
 
 # A tiny solvable world: robot [0,0] facing East, open row to the goal [3,0].
 SIMPLE_WORLD = {"robot": [0, 0], "dir": "E", "goal": [3, 0], "walls": []}
@@ -211,6 +212,58 @@ def test_verify_run_never_mutates_the_world():
     engine.verify_run(SIMPLE_WORLD, SIMPLE_PLAN, [])
 
     assert SIMPLE_WORLD == world
+
+
+# ---------------------------------------------------------------------------
+# Dry mode — the scripted planner (no model, no network)
+# ---------------------------------------------------------------------------
+
+def test_dry_backend_runs_the_real_loop_with_scripted_replies():
+    result = engine.run_plan("go", new_world(), backend="dry", max_tries=3)
+
+    assert result["backend"] == "dry"
+    assert [record["ok"] for record in result["history"]] == [False, True]
+    assert result["attempts"] == 2
+    assert result["actions"] == engine.DRY_SAFE_PLAN
+    assert result["error"] is None
+    assert result["verification"]["ok"] is True
+
+
+def test_dry_replies_are_the_hazard_then_the_corrected_route():
+    ask = engine.get_ask("dry")
+
+    first = json.loads(ask("go", new_world()))["actions"]
+    second = json.loads(ask("go", new_world()))["actions"]
+
+    assert first == engine.DRY_HAZARD_PLAN
+    assert second == engine.DRY_SAFE_PLAN
+
+
+def test_each_call_to_get_ask_dry_starts_the_script_over():
+    first_plan = json.loads(engine.get_ask("dry")("go", new_world()))["actions"]
+
+    assert first_plan == engine.DRY_HAZARD_PLAN
+
+
+def test_the_dry_hazard_plan_really_collides_in_the_default_world():
+    from backend.verifier.harness import verify_plan
+
+    checks = {c["id"]: c for c in verify_plan(new_world(), engine.DRY_HAZARD_PLAN)["checks"]}
+
+    assert checks["no_collisions"]["ok"] is False
+    assert checks["no_collisions"]["data"]["cell"] == [3, 0]
+
+
+def test_the_dry_safe_plan_is_really_verified():
+    from backend.verifier.harness import verify_plan
+
+    assert verify_plan(new_world(), engine.DRY_SAFE_PLAN)["ok"] is True
+
+
+def test_dry_backend_is_labelled_as_scripted_and_claims_no_model():
+    assert engine.backend_label("dry") == "Scripted (dry mode)"
+    assert engine.backend_model("dry") is None
+    assert engine._used_backend_label("dry", lambda i, w: "") == "dry"
 
 
 def test_backend_labels_and_models_come_from_the_real_configuration():

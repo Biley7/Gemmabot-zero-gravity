@@ -90,6 +90,16 @@ KEYFRAME_TRACE_DRAW = """
 }
 """
 
+# Collision marker — the cell the verifier refused (Safety Lab).  Breathes
+# red like the goal breathes green: same rhythm, opposite meaning.
+KEYFRAME_DANGER_PULSE = """
+@keyframes gb-danger-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(240,82,82,0.0); }
+  50%  { box-shadow: 0 0 12px 3px rgba(240,82,82,0.42); }
+  100% { box-shadow: 0 0 0 0 rgba(240,82,82,0.0); }
+}
+"""
+
 def transition(*properties: str, duration: int = DURATION_BASE, easing: str = EASE_OUT) -> str:
     """Return a CSS transition string for the given properties."""
     dur = f"{duration}ms"
@@ -97,6 +107,10 @@ def transition(*properties: str, duration: int = DURATION_BASE, easing: str = EA
 
 def animation_pulse(duration_ms: int = 1800) -> str:
     return f"gb-pulse {duration_ms}ms {EASE_INOUT} infinite"
+
+def animation_danger_pulse(duration_ms: int = 1800) -> str:
+    """Slow red breathing for a cell the verifier refused."""
+    return f"gb-danger-pulse {duration_ms}ms {EASE_INOUT} infinite"
 
 def animation_slide_in(duration_ms: int = DURATION_MODERATE) -> str:
     return f"gb-slide-in {duration_ms}ms {EASE_OUT} both"
@@ -112,5 +126,6 @@ ALL_KEYFRAMES = "\n".join([
     KEYFRAME_FADE_IN,
     KEYFRAME_GOAL_GLOW,
     KEYFRAME_STEP_FLASH,
+    KEYFRAME_DANGER_PULSE,
     KEYFRAME_TRACE_DRAW,
 ])

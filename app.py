@@ -25,6 +25,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from gemmabot.config import MAX_REPAIRS
+from gemmabot.simulator import new_world
 
 import engine
 import ui_helpers
@@ -36,6 +37,7 @@ from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
 from frontend.panels import brain
+from frontend.panels import safety
 from frontend.simulation import player as playback
 from frontend.simulation import player_view
 
@@ -106,6 +108,8 @@ def _init_state() -> None:
     st.session_state.setdefault("connections", None)
     st.session_state.setdefault("replay", None)
     st.session_state.setdefault("replay_autoplay", False)
+    st.session_state.setdefault("safety_result", None)
+    st.session_state.setdefault("safety_autoplay", False)
 
 
 _init_state()
@@ -144,6 +148,21 @@ def _render_replay(replay: dict) -> None:
         height=player_view.player_height(),
         scrolling=False,
     )
+
+
+def _render_safety_replay(attempt: dict) -> None:
+    """The same player, pointed at one attempt of the safety lab."""
+    autoplay = bool(st.session_state.pop("safety_autoplay", False))
+    st.components.v1.html(
+        player_view.player_html(attempt["timeline"], autoplay=autoplay),
+        height=player_view.player_height(),
+        scrolling=False,
+    )
+
+
+def _safety_pick_changed() -> None:
+    """Replay the attempt that was just selected (one shot)."""
+    st.session_state.safety_autoplay = True
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +359,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_names = ["Text command"]
+tab_names = ["Text command", "Safety Lab"]
 if HAVE_MAPVISION:
     tab_names.append("Scan map")
 if HAVE_BENCHMARK:
@@ -555,6 +574,158 @@ with tabs["Text command"]:
                 )
             else:
                 st.caption("No actions executed yet.")
+
+
+# ── Safety Lab ────────────────────────────────────────────────────────────
+with tabs["Safety Lab"]:
+    st.markdown(DS.section_title("Safety lab", icon="🛡"), unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
+        f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.LG)}'>"
+        "The verifier refuses a plan, the loop repairs it. Every verdict, "
+        "collision cell and replay below comes from the real pipeline — only "
+        "dry mode's reply text is scripted, and it says so."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    safety_instruction = st.text_input(
+        "Safety check instruction",
+        "Move to the goal using the safest route.",
+        key="safety_instruction",
+    )
+    dry_label = engine.backend_label("dry")
+    planner_choice = st.radio(
+        "Planner", [dry_label, "Live model"], key="safety_planner", horizontal=True
+    )
+    dry_mode = planner_choice == dry_label
+    if dry_mode:
+        st.caption(
+            f"Dry mode: scripted replies on the default world (new_world()) — "
+            f"the loop, the verifier and the replay are real. Live mode uses "
+            f"the sidebar engine ({engine.backend_label(backend)})."
+        )
+
+    if st.button("Run safety check", type="primary"):
+        # Dry mode demonstrates on the default world its scripted plans are
+        # calibrated to; live mode uses whatever map is loaded.
+        lab_world = (
+            copy.deepcopy(new_world()) if dry_mode
+            else copy.deepcopy(st.session_state.world)
+        )
+        with st.spinner("Verifying plans and repairing failures…"):
+            result = engine.run_plan(
+                safety_instruction,
+                lab_world,
+                backend="dry" if dry_mode else backend,
+                max_tries=max_tries,
+            )
+        stage_list = safety.stages(lab_world, result["history"])
+        st.session_state.safety_result = {
+            "world": lab_world,
+            "instruction": safety_instruction,
+            "planner": engine.backend_label(result["backend"]),
+            "max_tries": max_tries,
+            "attempts": result["attempts"],
+            "latency": result["latency"],
+            "actions": result["actions"],
+            "error": result["error"],
+            "stages": stage_list,
+            "summary": safety.summary(stage_list),
+            "replays": safety.replays(lab_world, result["history"]),
+        }
+        st.session_state.safety_autoplay = True
+        st.session_state.last_run = {
+            "source": "safety",
+            "backend": result["backend"],
+            "attempts": result["attempts"],
+            "max_tries": max_tries,
+            "latency": result["latency"],
+            "attempts_label": f"{result['attempts']} / {max_tries}",
+            "latency_label": f"{result['latency']:.2f} s",
+            "status": (
+                "Verified safe" if result["actions"] is not None
+                else "No valid plan"
+            ),
+        }
+        if HAVE_LOGGER:
+            try:
+                run_logger.log_run(
+                    safety_instruction,
+                    result["backend"],
+                    result["actions"],
+                    result["attempts"],
+                    result["history"],
+                    latency=result["latency"],
+                    path=str(LOG_PATH),
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Run log could not be written: {exc}")
+        st.rerun()
+
+    lab = st.session_state.safety_result
+    if lab:
+        st.markdown(
+            safety.meta_html(
+                lab["planner"], lab["instruction"], lab["attempts"], lab["latency"]
+            ),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            safety.report_html(lab["stages"], lab["summary"]),
+            unsafe_allow_html=True,
+        )
+
+        # ── Replay: the simulator's own run of one attempt ────────────────
+        st.markdown(DS.section_title("Replay"), unsafe_allow_html=True)
+        attempts = lab["replays"]
+        if not attempts:
+            st.markdown(
+                DS.card(
+                    f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
+                    f"color:{C.TEXT_SECONDARY}'>No attempt produced a runnable "
+                    "plan, so there is nothing to replay.</span>",
+                    title="Nothing to replay",
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            labels = [
+                f"{item['label']} · {item['steps']} action(s)"
+                + (" · halted" if item["halted"] else "")
+                for item in attempts
+            ]
+            chosen_label = st.radio(
+                "Attempt to replay",
+                labels,
+                key="safety_replay_pick",
+                horizontal=True,
+                on_change=_safety_pick_changed,
+            )
+            chosen = attempts[labels.index(chosen_label)]
+            collision = lab["summary"].get("collision")
+            if collision:
+                st.markdown(
+                    f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
+                    f"color:{C.TEXT_SECONDARY};margin-bottom:{S.px(S.SM)}'>"
+                    f"Collision location "
+                    f"<span style='color:{C.ERROR}'>{collision['text']}</span>"
+                    f" — refused on attempt {collision['attempt']}. The map below "
+                    f"shows {chosen['label'].lower()} with its real path and the "
+                    f"refused cell marked.</div>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown(ui_helpers.grid_legend_html(), unsafe_allow_html=True)
+            st.markdown(
+                ui_helpers.world_grid_html(
+                    chosen["timeline"]["final_world"],
+                    path=chosen["timeline"]["path"],
+                    danger_cell=collision["cell"] if collision else None,
+                    cell_px=S.CELL_SIZE,
+                ),
+                unsafe_allow_html=True,
+            )
+            _render_safety_replay(chosen)
 
 
 # ── Scan map ──────────────────────────────────────────────────────────────
