@@ -10,6 +10,11 @@ history, ``map_vision.read_map`` history, ``simulator.render``/``step``,
 The Execute stage is animated by ``frontend.simulation.player`` (the
 simulator's own timeline) and drawn by ``player_view`` — the player only
 replays those steps, it never re-simulates or re-times them.
+
+The Gemma Brain panel (``frontend.panels.brain``) reports the run's structured
+metadata — model, backend, loop status, attempts, latency, plan size and the
+four checks ``harness.verify_plan`` evaluated.  It never shows model
+reasoning: it is metadata, not a transcript.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.panels import brain
 from frontend.simulation import player as playback
 from frontend.simulation import player_view
 
@@ -163,6 +169,38 @@ def _render_telemetry(summary: dict) -> None:
     col2.metric("Latency",  summary.get("latency_label",  "—"))
     col3.metric("Backend",  summary.get("backend",        "—"))
     col4.metric("Status",   summary.get("status",         "—"))
+
+
+def _paint_brain(slot, meta: dict) -> None:
+    """Draw the Gemma Brain panel into its slot."""
+    slot.markdown(brain.brain_panel_html(meta), unsafe_allow_html=True)
+
+
+def _run_brain_meta(
+    *,
+    backend: str,
+    verification: dict | None,
+    actions: list | None,
+    attempts: int,
+    max_tries: int,
+    latency: float | None,
+    steps: int | None,
+    reached: bool | None,
+    error: str | None,
+) -> dict:
+    """Post-run Brain metadata: the verified plan plus its real four checks."""
+    return brain.run_metadata(
+        backend_label=engine.backend_label(backend),
+        model=engine.backend_model(backend),
+        verification=verification,
+        actions=actions,
+        attempts=attempts,
+        max_tries=max_tries,
+        latency=latency,
+        steps=steps,
+        reached=reached,
+        error=error,
+    )
 
 
 def _run_status_chip(summary: dict) -> None:
@@ -336,15 +374,48 @@ with tabs["Text command"]:
         "Instruction", "Move to the goal using the safest route."
     )
 
+    # ── Gemma Brain ───────────────────────────────────────────────────────
+    # The slot is created before the Run button so the planning loop can stream
+    # Thinking → Repairing → Executing into it while the run is still going.
+    # It shows structured metadata only — never the model's reasoning.
+    brain_slot = st.empty()
+    stored_brain = (st.session_state.text_result or {}).get("brain")
+    if stored_brain:
+        _paint_brain(brain_slot, stored_brain)
+
     if st.button("Run plan", type="primary"):
         if not instruction.strip():
             st.warning("Enter an instruction first.")
         else:
+            live = {"attempt": 0}
+
+            def _live_status(status_key: str, status_detail: str) -> None:
+                """Stream one real loop state into the panel."""
+                _paint_brain(
+                    brain_slot,
+                    brain.brain_metadata(
+                        backend=engine.backend_label(backend),
+                        model=engine.backend_model(backend),
+                        status=status_key,
+                        attempts=live["attempt"],
+                        max_tries=max_tries,
+                        detail=status_detail,
+                    ),
+                )
+
+            def _on_attempt(record: dict) -> None:
+                """Drive the panel from the harness's own attempt records."""
+                live["attempt"] = int(record.get("attempt") or 0)
+                status_key, status_detail = brain.attempt_status(record, max_tries)
+                _live_status(status_key, status_detail)
+
+            _live_status("thinking", f"attempt 1/{max_tries} — asking the model")
             result = engine.run_plan(
                 instruction,
                 st.session_state.world,
                 backend=backend,
                 max_tries=max_tries,
+                on_attempt=_on_attempt,
             )
             metrics = ui_helpers.run_metrics(
                 result["actions"], result["attempts"], max_tries, result["latency"]
@@ -365,12 +436,30 @@ with tabs["Text command"]:
             else:
                 st.session_state.replay = None
 
+            # Brain metadata: the plan this run verified (or last attempted)
+            # plus the four checks harness.verify_plan really evaluated.
+            brain_meta = _run_brain_meta(
+                backend=result["backend"],
+                verification=result.get("verification"),
+                actions=result["actions"],
+                attempts=result["attempts"],
+                max_tries=max_tries,
+                latency=result["latency"],
+                steps=len(replay["steps"]) if replay else None,
+                reached=replay["reached"] if replay else None,
+                error=result["error"],
+            )
+            _live_status(
+                brain_meta["status"]["key"], brain_meta["status"]["detail"]
+            )
+
             st.session_state.text_result = {
                 **result,
                 "instruction": instruction,
                 "max_tries": max_tries,
                 "metrics": metrics,
                 "replay": replay,
+                "brain": brain_meta,
             }
             st.session_state.last_run = {
                 "source": "text",
@@ -415,8 +504,8 @@ with tabs["Text command"]:
             unsafe_allow_html=True,
         )
 
-        # Telemetry row
-        _render_telemetry({**stored["metrics"], "backend": stored["backend"]})
+        # Telemetry lives in the Gemma Brain panel above — Attempts, Latency,
+        # Backend and Status are read from the same run there.
 
         # Outcome status — from the simulator timeline the player replays
         replay = stored.get("replay")

@@ -76,22 +76,31 @@ def test_run_plan_builds_a_replayable_execution_timeline(monkeypatch):
     """A verified plan is executed into a timeline the player can replay."""
     import engine
 
-    def fake_run_plan(instruction, world, backend="api", max_tries=3, ask=None):
+    def fake_run_plan(
+        instruction, world, backend="api", max_tries=3, ask=None, on_attempt=None
+    ):
+        history = [
+            {
+                "attempt": 1,
+                "prompt": instruction,
+                "reply": json.dumps({"thought": "t", "actions": DEFAULT_WORLD_PLAN}),
+                "actions": DEFAULT_WORLD_PLAN,
+                "ok": True,
+                "feedback": "ok",
+            }
+        ]
+        # The real harness streams each record to the UI the moment it exists.
+        if on_attempt is not None:
+            for record in history:
+                on_attempt(record)
         return {
             "actions": DEFAULT_WORLD_PLAN,
             "attempts": 1,
-            "history": [
-                {
-                    "attempt": 1,
-                    "prompt": instruction,
-                    "reply": json.dumps({"thought": "t", "actions": DEFAULT_WORLD_PLAN}),
-                    "ok": True,
-                    "feedback": "ok",
-                }
-            ],
+            "history": history,
             "latency": 1.25,
             "backend": "api",
             "error": None,
+            "verification": engine.verify_run(world, DEFAULT_WORLD_PLAN, history),
         }
 
     monkeypatch.setattr(engine, "run_plan", fake_run_plan)
@@ -103,11 +112,6 @@ def test_run_plan_builds_a_replayable_execution_timeline(monkeypatch):
     assert at.session_state["world"]["robot"] == [6, 5]
     assert at.session_state["last_run"]["status"] == "Verified safe"
     assert at.session_state["last_run"]["backend"] == "api"
-    metrics = {m.label: m.value for m in at.metric}
-    assert metrics.get("Attempts") == "1 / 3"
-    assert metrics.get("Latency") == "1.25 s"
-    assert metrics.get("Backend") == "api"
-    assert metrics.get("Status") == "Verified safe"
 
     # Phase 3: the board slot now shows the player for this run.
     replay = at.session_state["replay"]
@@ -120,12 +124,72 @@ def test_run_plan_builds_a_replayable_execution_timeline(monkeypatch):
     assert at.session_state.get("replay_autoplay") in (None, False)
 
 
+# A distinctive marker for the model's private reasoning.  The panel must
+# never contain it: it renders metadata, not a transcript.
+REASONING = "SECRET-reasoning-marker"
+
+
+def test_run_plan_shows_the_gemma_brain_metadata(monkeypatch):
+    """Phase 4: the panel reports the run's real numbers and four checks."""
+    import engine
+
+    def fake_run_plan(
+        instruction, world, backend="api", max_tries=3, ask=None, on_attempt=None
+    ):
+        history = [
+            {
+                "attempt": 1,
+                "prompt": instruction,
+                "reply": json.dumps({"thought": REASONING, "actions": DEFAULT_WORLD_PLAN}),
+                "actions": DEFAULT_WORLD_PLAN,
+                "ok": True,
+                "feedback": "ok",
+            }
+        ]
+        return {
+            "actions": DEFAULT_WORLD_PLAN,
+            "attempts": 1,
+            "history": history,
+            "latency": 1.25,
+            "backend": "api",
+            "error": None,
+            "verification": engine.verify_run(world, DEFAULT_WORLD_PLAN, history),
+        }
+
+    monkeypatch.setattr(engine, "run_plan", fake_run_plan)
+
+    at = _run_app()
+    _button(at, "Run plan").click().run()
+
+    assert not at.exception, [element.value for element in at.exception]
+    meta = at.session_state["text_result"]["brain"]
+    assert meta["model"]["family"] == "Gemma 4"
+    assert meta["model"]["id"]          # the configured id, not a placeholder
+    assert meta["backend"]["label"] == "API (Gemini)"
+    assert meta["status"]["key"] == "executing"
+    assert meta["attempts"]["label"] == "1 / 3"
+    assert meta["latency"]["label"] == "1.25 s"
+    assert meta["plan"]["label"] == f"{len(DEFAULT_WORLD_PLAN)} actions"
+    assert [entry["ok"] for entry in meta["checks"]] == [True] * 4
+    assert meta["verified"] is True
+
+    panels = [element.value for element in at.markdown if "Gemma Brain" in element.value]
+    assert len(panels) == 1, "expected exactly one Brain panel"
+    panel = panels[0]
+    assert panel.count("data-ok='true'") == 4
+    # The panel is structured metadata: the model's reasoning is not in it.
+    assert REASONING not in panel
+    assert "Model reply" not in panel
+
+
 def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
     import engine
 
     reason = "could not parse reply as JSON"
 
-    def fake_run_plan(instruction, world, backend="api", max_tries=3, ask=None):
+    def fake_run_plan(
+        instruction, world, backend="api", max_tries=3, ask=None, on_attempt=None
+    ):
         return {
             "actions": None,
             "attempts": 1,
@@ -134,6 +198,7 @@ def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
                     "attempt": 1,
                     "prompt": instruction,
                     "reply": "no json here",
+                    "actions": None,
                     "ok": False,
                     "feedback": reason,
                 }
@@ -141,6 +206,7 @@ def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
             "latency": 0.5,
             "backend": "api",
             "error": reason,
+            "verification": None,
         }
 
     monkeypatch.setattr(engine, "run_plan", fake_run_plan)
@@ -151,3 +217,13 @@ def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
     assert not at.exception, [element.value for element in at.exception]
     assert at.session_state["world"]["robot"] == [0, 0], "failed AI must not move the robot"
     assert any(reason in element.value for element in at.error)
+
+    # The panel still reports the run honestly: nothing was verified.
+    meta = at.session_state["text_result"]["brain"]
+    assert meta["status"]["key"] == "repairing"
+    assert meta["plan"]["label"] == "—"
+    assert [entry["ok"] for entry in meta["checks"]] == [None] * 4
+    assert meta["verified"] is False
+    panel = next(element.value for element in at.markdown if "Gemma Brain" in element.value)
+    assert panel.count("data-ok='none'") == 4
+    assert "data-ok='true'" not in panel

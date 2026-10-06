@@ -140,6 +140,91 @@ def test_run_plan_survives_ask_exceptions():
     assert result["backend"] == "api"
 
 
+def test_run_plan_streams_every_attempt_to_on_attempt():
+    calls = {"n": 0}
+
+    def ask(instruction, world):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "no json at all"
+        return _plan_reply(SIMPLE_PLAN)
+
+    seen: list[dict] = []
+    result = engine.run_plan(
+        "go", SIMPLE_WORLD, backend="api", max_tries=3, ask=ask, on_attempt=seen.append
+    )
+
+    assert [record["attempt"] for record in seen] == [1, 2]
+    assert [record["ok"] for record in seen] == [False, True]
+    # The callback sees the records the harness really wrote, in order.
+    assert seen == result["history"]
+    # A parse failure recorded no actions; the accepted attempt did.
+    assert seen[0]["actions"] is None
+    assert seen[1]["actions"] == SIMPLE_PLAN
+
+
+def test_run_plan_returns_the_structured_verification_of_its_plan():
+    ask = lambda instruction, world: _plan_reply(SIMPLE_PLAN)
+
+    result = engine.run_plan("go", SIMPLE_WORLD, backend="api", max_tries=1, ask=ask)
+    verification = result["verification"]
+
+    assert verification["ok"] is True
+    assert verification["actions"] == SIMPLE_PLAN
+    assert [entry["ok"] for entry in verification["checks"]] == [True] * 4
+    assert SIMPLE_WORLD == {"robot": [0, 0], "dir": "E", "goal": [3, 0], "walls": []}
+
+
+def test_a_failed_run_still_verifies_the_last_plan_it_attempted():
+    walled_world = {"robot": [0, 0], "dir": "E", "goal": [3, 0], "walls": [[1, 0]]}
+    ask = lambda instruction, world: _plan_reply([{"cmd": "forward", "steps": 3}])
+
+    result = engine.run_plan("go", walled_world, backend="api", max_tries=2, ask=ask)
+    verification = result["verification"]
+
+    assert result["actions"] is None
+    assert verification is not None, "the last attempted plan is still verifiable"
+    assert verification["actions"] == [{"cmd": "forward", "steps": 3}]
+    checks = {entry["id"]: entry for entry in verification["checks"]}
+    assert checks["valid_actions"]["ok"] is True
+    assert checks["no_collisions"]["ok"] is False
+    assert "[1, 0]" in checks["no_collisions"]["detail"]
+
+
+def test_a_run_with_nothing_parsable_has_no_verification():
+    def ask(instruction, world):
+        raise RuntimeError("boom")
+
+    result = engine.run_plan("go", SIMPLE_WORLD, backend="api", max_tries=2, ask=ask)
+
+    assert result["verification"] is None
+
+
+def test_verify_run_reports_none_without_actions():
+    assert engine.verify_run(SIMPLE_WORLD, None, []) is None
+    assert engine.verify_run(SIMPLE_WORLD, None, [{"attempt": 1, "actions": None}]) is None
+
+
+def test_verify_run_never_mutates_the_world():
+    world = copy.deepcopy(SIMPLE_WORLD)
+
+    engine.verify_run(SIMPLE_WORLD, SIMPLE_PLAN, [])
+
+    assert SIMPLE_WORLD == world
+
+
+def test_backend_labels_and_models_come_from_the_real_configuration():
+    from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL
+
+    assert engine.backend_label("api") == "API (Gemini)"
+    assert engine.backend_label("ollama") == "Ollama (local)"
+    assert engine.backend_label("auto") == "Auto (API → Ollama)"
+    assert engine.backend_model("api") == GEMMA_API_MODEL
+    assert engine.backend_model("local") == OLLAMA_MODEL
+    # An unresolved auto backend must not claim a model.
+    assert engine.backend_model("auto") is None
+
+
 def test_run_plan_auto_reports_backend_that_actually_answered():
     def broken_api(instruction, world):
         raise RuntimeError("api down")

@@ -21,11 +21,12 @@ import os
 import time
 from typing import Any, Callable
 
-from backend.verifier.harness import plan_with_repair
+from backend.verifier.harness import plan_with_repair, verify_plan
 from gemmabot.simulator import new_world, reached_goal, step
 
 AskFn = Callable[[str, dict], str]
 VisionAskFn = Callable[[str, bytes, str], str]
+AttemptFn = Callable[[dict], None]
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,39 @@ def _used_backend_label(requested: str, ask_fn: Callable) -> str:
     return state.get("used") or "auto"
 
 
+# Display name per resolved backend label ('api' / 'ollama' / 'auto').
+BACKEND_DISPLAY = {
+    "api": "API (Gemini)",
+    "ollama": "Ollama (local)",
+    "auto": "Auto (API → Ollama)",
+}
+
+
+def backend_label(backend: str) -> str:
+    """Display name for a resolved backend label — ``'ollama'`` → ``'Ollama (local)'``.
+
+    An unrecognised label is shown verbatim: this never guesses.
+    """
+    name = (backend or "").strip().lower()
+    return BACKEND_DISPLAY.get(name, backend or "—")
+
+
+def backend_model(backend: str) -> str | None:
+    """The model id ``gemmabot.config`` holds for *backend*, or ``None``.
+
+    The ids are the real configuration values.  ``auto`` is only resolved once
+    a reply has arrived, so an unresolved ``auto`` claims no model.
+    """
+    from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL
+
+    name = (backend or "").strip().lower()
+    if name == "api":
+        return GEMMA_API_MODEL
+    if name in ("ollama", "local"):
+        return OLLAMA_MODEL
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Vision backend selection — deliberately separate from text planning
 # ---------------------------------------------------------------------------
@@ -178,24 +212,66 @@ def get_vision_ask(
 # Planning (propose → verify → repair)
 # ---------------------------------------------------------------------------
 
+def _last_attempted_actions(history: list[dict]) -> list[dict] | None:
+    """The most recent parsed action list in a run's history, if there is one."""
+    for record in reversed(history or []):
+        candidate = record.get("actions")
+        if isinstance(candidate, list) and candidate:
+            return candidate
+    return None
+
+
+def verify_run(
+    world: dict,
+    actions: list[dict] | None,
+    history: list[dict] | None,
+) -> dict | None:
+    """Structured verification of the plan a run produced — or last attempted.
+
+    Uses the accepted plan when there is one, otherwise the newest attempt that
+    got as far as a parsed action list.  Returns ``harness.verify_plan``'s
+    result extended with the ``actions`` it verified, or ``None`` when no
+    attempt produced anything runnable (an ask or parse failure) — in which
+    case there is nothing real to verify.
+    """
+    target = actions if isinstance(actions, list) and actions else None
+    if target is None:
+        target = _last_attempted_actions(history or [])
+    if not target:
+        return None
+
+    outcome = dict(verify_plan(world, target))
+    outcome["actions"] = target
+    return outcome
+
+
 def run_plan(
     instruction: str,
     world: dict,
     backend: str = "api",
     max_tries: int = 3,
     ask: Callable | None = None,
+    on_attempt: AttemptFn | None = None,
 ) -> dict:
     """Run one instruction through ``harness.plan_with_repair``.
 
     Never executes anything and never mutates *world*: the world is deep-copied
     before it is handed to the harness, which itself only simulates copies.
 
+    Parameters
+    ----------
+    on_attempt:
+        Optional callback invoked with each history record the moment the
+        repair loop produces it, so a UI can stream the loop live.
+
     Returns
     -------
     dict
-        ``{"actions", "attempts", "history", "latency", "backend", "error"}``.
-        *actions* is the verified plan or ``None``; *latency* is measured with
-        ``time.perf_counter()``; *error* is the readable failure reason.
+        ``{"actions", "attempts", "history", "latency", "backend", "error",
+        "verification"}``.  *actions* is the verified plan or ``None``;
+        *latency* is measured with ``time.perf_counter()``; *error* is the
+        readable failure reason; *verification* is ``verify_run()``'s
+        structured four-check report (or ``None`` when nothing was runnable).
     """
     tries = max(1, int(max_tries))
     ask_fn = ask if ask is not None else get_ask(backend)
@@ -211,6 +287,7 @@ def run_plan(
             copy.deepcopy(world),
             ask_fn,
             max_tries=tries,
+            on_attempt=on_attempt,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the UI, never fatal
         error = f"{type(exc).__name__}: {exc}"
@@ -226,6 +303,7 @@ def run_plan(
         "latency": latency,
         "backend": _used_backend_label(backend, ask_fn),
         "error": error,
+        "verification": verify_run(world, actions, history),
     }
 
 

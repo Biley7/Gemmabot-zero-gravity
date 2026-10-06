@@ -8,7 +8,12 @@ dry_run(world, actions) -> (bool, str)
     Validates a list of actions against a *copy* of the world.
     The original world is never modified.
 
-plan_with_repair(instruction, world, ask, max_tries=3)
+verify_plan(world, actions) -> {"ok", "reason", "checks"}
+    Structured verification: the same simulation ``dry_run`` runs, reported
+    one check at a time (valid actions, in bounds, no collisions, goal
+    reachable) for a UI.  ``dry_run`` is built on it, so the two agree.
+
+plan_with_repair(instruction, world, ask, max_tries=3, on_attempt=None)
     -> (actions | None, attempts: int, history: list[dict])
     Calls ``ask`` up to ``max_tries`` times, validates each plan with
     ``dry_run``, and repairs via a new prompt on failure.  Returns None
@@ -21,10 +26,293 @@ import json
 import re
 from typing import Any, Callable
 
-from gemmabot.simulator import step, reached_goal, DIRS, ARROW
+from gemmabot.config import SIZE
+from gemmabot.simulator import step, reached_goal, DIRS, ARROW, DELTA
 
 # Hard limit on plan length to catch runaway models early.
 MAX_PLAN_STEPS = 20
+
+# Called with each history record as soon as it exists (attempt, prompt,
+# reply, actions, ok, feedback) so a UI can show live loop progress.
+AttemptCallback = Callable[[dict], None]
+
+# Commands the simulator understands.  ``step()`` answers anything else with
+# "unknown command: ...", so this is the same contract, checked up front.
+VALID_COMMANDS: tuple[str, ...] = ("turn_left", "turn_right", "forward")
+
+# The properties every plan is verified against, in the order a simulation
+# meets them.  ``verify_plan`` reports exactly these ids and labels.
+VERIFICATION_CHECKS: tuple[tuple[str, str], ...] = (
+    ("valid_actions",  "Valid actions"),
+    ("in_bounds",      "In bounds"),
+    ("no_collisions",  "No collisions"),
+    ("goal_reachable", "Goal reachable"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Structured verification helpers
+# ---------------------------------------------------------------------------
+
+def _action_phrase(count: int) -> str:
+    """``1 action`` / ``10 actions``."""
+    return f"{count} action" if count == 1 else f"{count} actions"
+
+
+def _blank_checks(detail: str) -> dict[str, dict]:
+    """One unproven (``ok=None``) entry per check, all carrying *detail*."""
+    return {check_id: {"ok": None, "detail": detail} for check_id, _ in VERIFICATION_CHECKS}
+
+
+def _pack(checks: dict[str, dict], reason: str) -> dict[str, Any]:
+    """Assemble a ``verify_plan`` result from per-check outcomes."""
+    ok = all(entry["ok"] is True for entry in checks.values())
+    return {
+        "ok": ok,
+        "reason": "ok" if ok else reason,
+        "checks": [
+            {
+                "id": check_id,
+                "label": label,
+                "ok": checks[check_id]["ok"],
+                "detail": checks[check_id]["detail"],
+            }
+            for check_id, label in VERIFICATION_CHECKS
+        ],
+    }
+
+
+def _input_guard(world: Any, actions: Any) -> str | None:
+    """Guard rails shared by ``verify_plan`` and ``dry_run``.
+
+    Returns the failure reason, or ``None`` when the inputs are sound.  The
+    order is the order ``dry_run`` has always reported.
+    """
+    if not isinstance(world, dict):
+        return "world must be a dict"
+    for key in ("robot", "dir", "goal"):
+        if key not in world:
+            return f"world is missing required key: '{key}'"
+    if world.get("dir") not in DIRS:
+        return f"world has invalid heading: {world.get('dir')!r}"
+    if not isinstance(actions, list):
+        return "actions must be a list"
+    return None
+
+
+def _scan(actions: list) -> dict:
+    """Static pass over every action: is the whole plan simulator commands?
+
+    Reads the action dicts only — nothing is simulated — so the answer covers
+    the entire plan even when a run stops earlier.
+    """
+    for index, action in enumerate(actions, start=1):
+        if not isinstance(action, dict) or "cmd" not in action:
+            return {
+                "index": index,
+                "detail": f"action {index} is not a valid action dict: {action!r}",
+            }
+        if action.get("cmd") not in VALID_COMMANDS:
+            return {
+                "index": index,
+                "detail": f"action {index} is not a simulator command: {action!r}",
+            }
+    return {"index": None, "detail": ""}
+
+
+def _attempted_cell(sim: dict) -> list[int]:
+    """The cell the robot tried to enter when ``step()`` refused a move.
+
+    Recovered from the state the simulator leaves behind: the robot stays on
+    its last good cell, so the refused cell is one heading-step away.
+    """
+    dx, dy = DELTA.get(sim["dir"], (0, 0))
+    return [sim["robot"][0] + dx, sim["robot"][1] + dy]
+
+
+def _walk(world: dict, actions: list) -> dict:
+    """Replay *actions* on a deep copy of *world* with the real ``step()``.
+
+    Stops exactly where the executor stops: at the first action the simulator
+    refuses.  Returns the facts the checks and the failure reason are read
+    from; *world* itself is never touched.
+
+    ``outcome`` is ``"completed"``, ``"blocked"`` (a move the simulator
+    refused) or ``"fault"`` (a malformed action, or one that raised).
+    """
+    sim = copy.deepcopy(world)
+    outcome = "completed"
+    reason = ""
+    blocked: dict | None = None
+
+    for index, action in enumerate(actions, start=1):
+        if not isinstance(action, dict) or "cmd" not in action:
+            outcome = "fault"
+            reason = f"action {index} is not a valid action dict: {action!r}"
+            break
+
+        try:
+            message = step(sim, action)
+        except Exception as exc:  # noqa: BLE001
+            outcome = "fault"
+            reason = f"action {index} ({action!r}) raised an unexpected error: {exc}"
+            break
+
+        # step() signals failure through its return string.
+        if message.startswith("blocked") or message.startswith("unknown"):
+            heading_arrow = ARROW.get(sim["dir"], sim["dir"])
+            reason = (
+                f"action {index} ({action!r}) failed: {message}. "
+                f"Robot is at {sim['robot']} facing {sim['dir']} {heading_arrow}"
+            )
+            if message.startswith("blocked"):
+                outcome = "blocked"
+                blocked = {
+                    "index": index,
+                    "action": action,
+                    "cell": _attempted_cell(sim),
+                }
+            else:
+                outcome = "fault"
+            break
+
+    return {"world": sim, "outcome": outcome, "reason": reason, "blocked": blocked}
+
+
+def verify_plan(world: dict[str, Any], actions: list[dict]) -> dict[str, Any]:
+    """Structured, per-check verification of *actions* against *world*.
+
+    ``dry_run`` is a thin wrapper around this function, so the verdict that
+    gates the repair loop and the checklist a UI shows can never disagree:
+    both read the same simulation.
+
+    Every ``detail`` string is a fact observed while verifying — an action the
+    simulator actually rejected, a cell the robot actually tried to enter, the
+    position it actually stopped at.  A check whose ``ok`` is ``None`` was
+    never proven (the plan stopped before reaching it) and is reported as
+    unproven, never as a pass.
+
+    Returns
+    -------
+    {"ok": bool, "reason": str, "checks": [{"id", "label", "ok", "detail"}]}
+        *ok* is True only when all four checks passed; *reason* is ``"ok"``
+        then, otherwise the first failure in the order the simulator hits it
+        (the same string ``dry_run`` returns).
+    """
+    guard = _input_guard(world, actions)
+    if guard is not None:
+        return _pack(_blank_checks(f"not evaluated — {guard}"), guard)
+
+    # --- Empty plan ----------------------------------------------------------
+    if len(actions) == 0:
+        checks = _blank_checks("not evaluated")
+        checks["valid_actions"] = {"ok": True, "detail": "no actions to validate"}
+        checks["in_bounds"] = {"ok": True, "detail": "the robot never moves"}
+        checks["no_collisions"] = {"ok": True, "detail": "the robot never moves"}
+        reached = reached_goal(world)
+        checks["goal_reachable"] = {
+            "ok": reached,
+            "detail": (
+                f"robot already stands on the goal at {world['goal']}"
+                if reached
+                else f"robot is at {world['robot']}, goal is at {world['goal']}"
+            ),
+        }
+        reason = (
+            "ok"
+            if reached
+            else f"empty plan: robot is at {world['robot']} but goal is at {world['goal']}"
+        )
+        return _pack(checks, reason)
+
+    # --- Guard: plan too long -------------------------------------------------
+    if len(actions) > MAX_PLAN_STEPS:
+        reason = (
+            f"plan has {len(actions)} actions, which exceeds the maximum of "
+            f"{MAX_PLAN_STEPS}"
+        )
+        checks = _blank_checks(f"not evaluated — {reason}")
+        scan = _scan(actions)
+        checks["valid_actions"] = (
+            {"ok": True, "detail": f"{_action_phrase(len(actions))}, all simulator commands"}
+            if scan["index"] is None
+            else {"ok": False, "detail": scan["detail"]}
+        )
+        return _pack(checks, reason)
+
+    # --- Valid actions: the whole plan, checked without simulating ------------
+    checks = _blank_checks("not evaluated")
+    scan = _scan(actions)
+    if scan["index"] is not None:
+        checks["valid_actions"] = {"ok": False, "detail": scan["detail"]}
+        unproven = f"not evaluated — {scan['detail']}"
+        for check_id in ("in_bounds", "no_collisions", "goal_reachable"):
+            checks[check_id] = {"ok": None, "detail": unproven}
+        # Ask the simulator for the exact reason the executor would report.
+        walk = _walk(world, actions)
+        return _pack(checks, walk["reason"] or scan["detail"])
+
+    checks["valid_actions"] = {
+        "ok": True,
+        "detail": f"{_action_phrase(len(actions))}, all simulator commands",
+    }
+
+    # --- Movement: bounds, collisions, goal -----------------------------------
+    walk = _walk(world, actions)
+    sim = walk["world"]
+
+    if walk["outcome"] == "completed":
+        checks["in_bounds"] = {
+            "ok": True,
+            "detail": f"no move left the {SIZE}×{SIZE} grid",
+        }
+        checks["no_collisions"] = {
+            "ok": True,
+            "detail": f"no move entered an obstacle ({len(world.get('walls') or [])} wall cells)",
+        }
+    elif walk["outcome"] == "blocked":
+        blocked = walk["blocked"]
+        cell = blocked["cell"]
+        index = blocked["index"]
+        inside = 0 <= cell[0] < SIZE and 0 <= cell[1] < SIZE
+        if inside:
+            checks["in_bounds"] = {
+                "ok": True,
+                "detail": f"no move left the {SIZE}×{SIZE} grid",
+            }
+            checks["no_collisions"] = {
+                "ok": False,
+                "detail": f"action {index} would enter the obstacle at {cell}",
+            }
+        else:
+            checks["in_bounds"] = {
+                "ok": False,
+                "detail": f"action {index} would leave the {SIZE}×{SIZE} grid at {cell}",
+            }
+            checks["no_collisions"] = {
+                "ok": True,
+                "detail": "no move entered an obstacle",
+            }
+    else:  # "fault" — the plan never ran, so nothing was proven
+        unproven = f"not evaluated — {walk['reason']}"
+        for check_id in ("in_bounds", "no_collisions", "goal_reachable"):
+            checks[check_id] = {"ok": None, "detail": unproven}
+        return _pack(checks, walk["reason"])
+
+    reached = reached_goal(sim)
+    checks["goal_reachable"] = {
+        "ok": reached,
+        "detail": (
+            f"the plan ends on the goal at {sim['goal']}"
+            if reached
+            else f"the robot ends at {sim['robot']}, the goal is at {sim['goal']}"
+        ),
+    }
+    reason = walk["reason"] or (
+        f"plan finished but goal not reached: robot ended at {sim['robot']}, "
+        f"goal is at {world['goal']}"
+    )
+    return _pack(checks, reason)
 
 
 def dry_run(world: dict[str, Any], actions: list[dict]) -> tuple[bool, str]:
@@ -49,66 +337,8 @@ def dry_run(world: dict[str, Any], actions: list[dict]) -> tuple[bool, str]:
     (False, reason)
         Validation failed; *reason* describes exactly what went wrong.
     """
-    # --- Guard: bad / missing inputs -------------------------------------------
-    if not isinstance(world, dict):
-        return False, "world must be a dict"
-    for key in ("robot", "dir", "goal"):
-        if key not in world:
-            return False, f"world is missing required key: '{key}'"
-    if world.get("dir") not in DIRS:
-        return False, f"world has invalid heading: {world.get('dir')!r}"
-
-    if not isinstance(actions, list):
-        return False, "actions must be a list"
-
-    if len(actions) == 0:
-        # An empty plan can never reach the goal (unless already there).
-        sim = copy.deepcopy(world)
-        if reached_goal(sim):
-            return True, "ok"
-        return False, (
-            f"empty plan: robot is at {world['robot']} but goal is at {world['goal']}"
-        )
-
-    # --- Guard: plan too long ---------------------------------------------------
-    if len(actions) > MAX_PLAN_STEPS:
-        return False, (
-            f"plan has {len(actions)} actions, which exceeds the maximum of "
-            f"{MAX_PLAN_STEPS}"
-        )
-
-    # --- Run on a deep copy so the real world is never touched -----------------
-    sim = copy.deepcopy(world)
-
-    for i, action in enumerate(actions, start=1):
-        if not isinstance(action, dict) or "cmd" not in action:
-            return False, (
-                f"action {i} is not a valid action dict: {action!r}"
-            )
-
-        try:
-            msg = step(sim, action)
-        except Exception as exc:  # noqa: BLE001
-            return False, (
-                f"action {i} ({action!r}) raised an unexpected error: {exc}"
-            )
-
-        # step() signals failure through its return string.
-        if msg.startswith("blocked") or msg.startswith("unknown"):
-            heading_arrow = ARROW.get(sim["dir"], sim["dir"])
-            return False, (
-                f"action {i} ({action!r}) failed: {msg}. "
-                f"Robot is at {sim['robot']} facing {sim['dir']} {heading_arrow}"
-            )
-
-    # --- All actions ran; check whether the goal was reached -------------------
-    if not reached_goal(sim):
-        return False, (
-            f"plan finished but goal not reached: "
-            f"robot ended at {sim['robot']}, goal is at {world['goal']}"
-        )
-
-    return True, "ok"
+    result = verify_plan(world, actions)
+    return (True, "ok") if result["ok"] else (False, result["reason"])
 
 
 def plan_with_repair(
@@ -116,6 +346,7 @@ def plan_with_repair(
     world: dict[str, Any],
     ask: Callable[[str, dict], str],
     max_tries: int = 3,
+    on_attempt: AttemptCallback | None = None,
 ) -> tuple[list[dict] | None, int, list[dict]]:
     """Call *ask* up to *max_tries* times, repairing the plan on each failure.
 
@@ -131,6 +362,9 @@ def plan_with_repair(
         as well as any fake/stub passed in for testing.
     max_tries:
         Hard cap on the number of attempts (default 3).
+    on_attempt:
+        Optional callback invoked with each history record the moment it is
+        recorded, so a UI can show the loop live (Thinking → Repairing).
 
     Returns
     -------
@@ -142,16 +376,23 @@ def plan_with_repair(
     History record shape
     --------------------
     {
-        "attempt":  int,   # 1-based
-        "prompt":   str,   # instruction string sent to ask()
-        "reply":    str,   # raw string returned by ask()
-        "ok":       bool,  # True only when dry_run passed
-        "feedback": str,   # "ok" on success; failure reason otherwise
+        "attempt":  int,        # 1-based
+        "prompt":   str,        # instruction string sent to ask()
+        "reply":    str,        # raw string returned by ask()
+        "actions":  list|None,  # parsed actions of this attempt, when it got
+                                # as far as dry_run() (None otherwise)
+        "ok":       bool,       # True only when dry_run passed
+        "feedback": str,        # "ok" on success; failure reason otherwise
     }
     """
     history: list[dict] = []
     # Keep the original instruction intact; repair prompts extend it inline.
     current_instruction = instruction
+
+    def _record(record: dict) -> None:
+        history.append(record)
+        if on_attempt is not None:
+            on_attempt(record)
 
     def _parse_plan(text: str) -> tuple[str, list]:
         text = re.sub(r"```(?:json)?", "", text)
@@ -168,10 +409,11 @@ def plan_with_repair(
         except Exception as exc:  # noqa: BLE001
             feedback = f"ask() raised an error: {exc}"
             print(f"  [attempt {attempt}/{max_tries}] ask error — {feedback}")
-            history.append({
+            _record({
                 "attempt": attempt,
                 "prompt": current_instruction,
                 "reply": "",
+                "actions": None,
                 "ok": False,
                 "feedback": feedback,
             })
@@ -185,10 +427,11 @@ def plan_with_repair(
         except Exception as exc:  # noqa: BLE001
             feedback = f"could not parse reply as JSON: {exc}"
             print(f"  [attempt {attempt}/{max_tries}] parse error — {feedback}")
-            history.append({
+            _record({
                 "attempt": attempt,
                 "prompt": current_instruction,
                 "reply": reply,
+                "actions": None,
                 "ok": False,
                 "feedback": feedback,
             })
@@ -201,10 +444,11 @@ def plan_with_repair(
             f"  [attempt {attempt}/{max_tries}] "
             + ("✓ plan ok" if ok else f"✗ {feedback}")
         )
-        history.append({
+        _record({
             "attempt": attempt,
             "prompt": current_instruction,
             "reply": reply,
+            "actions": actions,
             "ok": ok,
             "feedback": feedback,
         })
