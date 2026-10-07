@@ -33,7 +33,7 @@ def test_a_record_carries_everything_a_replay_needs(log_path):
     )
     assert set(record) == {
         "timestamp", "instruction", "backend", "success", "attempts", "latency",
-        "actions", "world", "history",
+        "actions", "world", "mode", "history",
     }
     assert record["actions"] == PLAN
     assert record["world"] == new_world()
@@ -69,6 +69,35 @@ def test_a_world_that_is_not_a_dict_is_recorded_as_none(log_path):
         record = run_logger.log_run("i", "api", PLAN, 1, [], path=log_path,
                                    world=value)
         assert record["world"] is None
+
+
+# ---------------------------------------------------------------------------
+# Provenance — who answered the run
+# ---------------------------------------------------------------------------
+
+def test_a_run_records_the_mode_the_caller_states(log_path):
+    live = run_logger.log_run("i", "api", PLAN, 1, [], path=log_path, mode="live")
+    scripted = run_logger.log_run("i", "dry", PLAN, 1, [], path=log_path,
+                                  mode="synthetic")
+    assert live["mode"] == "live"
+    assert scripted["mode"] == "synthetic"
+    # And it survives the round trip to disk.
+    loaded = run_logger.load_runs(path=log_path)
+    assert [record["mode"] for record in loaded] == ["live", "synthetic"]
+
+
+def test_a_mode_this_logger_does_not_understand_is_recorded_as_none(log_path):
+    """Anything but the two real modes is *unrecorded*, never guessed at."""
+    for value in (None, "", "LIVE", "live ", "scripted", "dry", 7, True, ["live"]):
+        record = run_logger.log_run("i", "api", PLAN, 1, [], path=log_path,
+                                   mode=value)
+        assert record["mode"] is None, value
+
+
+def test_a_run_logged_without_a_mode_keeps_the_key(log_path):
+    """The key is always written, so a reader can tell 'unstated' from 'old'."""
+    record = run_logger.log_run("i", "api", PLAN, 1, [], path=log_path)
+    assert "mode" in record and record["mode"] is None
 
 
 # ---------------------------------------------------------------------------

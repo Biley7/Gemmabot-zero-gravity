@@ -5,7 +5,8 @@ Owner: BACKEND
 Public API
 ----------
 log_run(instruction, backend, actions, attempts, history,
-        latency=None, path="logs/runs.jsonl", world=None) -> dict
+        latency=None, path="logs/runs.jsonl", world=None,
+        mode=None) -> dict
     Appends one JSONL record to *path* and returns it.
 
 load_runs(path="logs/runs.jsonl") -> list[dict]
@@ -17,11 +18,19 @@ summarize_run(record) -> str
 Record schema
 -------------
 timestamp, instruction, backend, success, attempts, latency, actions, world,
-history.  ``actions`` is the validated plan and ``world`` the world it was
+mode, history.  ``actions`` is the validated plan and ``world`` the world it was
 verified and executed against — together they let a run be replayed by the
 simulator alone, with no model call.  ``world`` is ``None`` when the caller did
 not supply one, and both keys are absent from records written before they were
 added: a reader must treat missing as "not captured", never as a guess.
+
+``mode`` records whether the run really called a model — ``"live"`` — or was
+answered by a scripted reader — ``"synthetic"``.  Only the caller knows which,
+so it is recorded verbatim and never derived here; anything other than those two
+values is stored as ``None``, which a reader must show as *provenance not
+recorded* rather than assume either way.  Older records have no ``mode`` key at
+all.  This is what lets a benchmark separate live measurements from scripted
+ones instead of quietly mixing them.
 
 Security
 --------
@@ -85,6 +94,7 @@ def log_run(
     latency: float | None = None,
     path: str = "logs/runs.jsonl",
     world: dict | None = None,
+    mode: str | None = None,
 ) -> dict:
     """Build and persist one run record.
 
@@ -110,6 +120,11 @@ def log_run(
         execution moved the robot.  Recorded so the run can be replayed later by
         the simulator alone — passing it is what makes a record replayable.
         ``None`` when the caller does not have one to hand.
+    mode:
+        ``"live"`` when a model really produced the replies, ``"synthetic"``
+        when a scripted reader did.  Stored only if it is one of those two —
+        anything else (including ``None``) is stored as ``None`` so a reader
+        can report the run's provenance as unrecorded instead of guessing.
 
     Returns
     -------
@@ -127,6 +142,9 @@ def log_run(
         # be reconstructed from the replies afterwards.
         "actions": copy.deepcopy(actions) if isinstance(actions, list) else None,
         "world": copy.deepcopy(world) if isinstance(world, dict) else None,
+        # Provenance, stated by the caller.  Never inferred from the result:
+        # a scripted run and a live one can produce the same plan.
+        "mode": mode if mode in ("live", "synthetic") else None,
         "history": history,
     }
 
@@ -324,11 +342,18 @@ if __name__ == "__main__":
                 latency=0.0,
                 path=REPLAY_PATH,
                 world=REPLAY_WORLD,
+                mode="synthetic",
             )
             print(f"  actions       : {rec_w['actions']}")
             print(f"  world captured: {rec_w['world'] == REPLAY_WORLD}")
+            print(f"  mode recorded : {rec_w['mode']}")
             assert rec_w["actions"] == [{"cmd": "forward", "steps": 2}]
             assert rec_w["world"] == REPLAY_WORLD
+            assert rec_w["mode"] == "synthetic"
+            # An unknown or missing mode is stored as None, never guessed at.
+            assert log_run("i", "api", None, 1, [], path=REPLAY_PATH)["mode"] is None
+            assert log_run("i", "api", None, 1, [], path=REPLAY_PATH,
+                           mode="reviewed")["mode"] is None
             REPLAY_WORLD["robot"][0] = 9    # caller's copy must not alias
             assert rec_w["world"]["robot"] == [0, 0], \
                 "world must be captured by value"

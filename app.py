@@ -21,10 +21,16 @@ shows the reading next to the world it proposes, validates that world
 (✓ Valid · ✓ Inside bounds · ✓ Reachable) and loads it into the simulator.  The
 verdicts are ``map_vision.check_world_report``'s; the world the simulator adopts
 is the one the validator accepted.
+
+The Benchmark Lab (``frontend.panels.benchmark``) measures runs that already
+happened.  It keeps live runs (a model answered) apart from synthetic ones (the
+scripted reader did), reports the denominator behind every rate, and shows a
+metric with no measurement as no data rather than as a zero.
 """
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -42,6 +48,7 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.panels import benchmark as benchmark_panel
 from frontend.panels import brain
 from frontend.panels import replay as replay_panel
 from frontend.panels import safety
@@ -52,6 +59,7 @@ from frontend.simulation import player_view
 ROOT = Path(__file__).parent
 LOG_PATH = ROOT / "logs" / "runs.jsonl"
 BENCHMARK_PATH = ROOT / "benchmarks" / "results.md"
+BENCHMARK_JSON = ROOT / "benchmarks" / "results.json"
 
 # ── Optional backend modules: the app must start without them ─────────────
 try:
@@ -546,6 +554,9 @@ with tabs["Text command"]:
                         latency=result["latency"],
                         path=str(LOG_PATH),
                         world=run_world,
+                        # Provenance, recorded while we still know it: the
+                        # benchmark cannot guess it afterwards.
+                        mode=engine.backend_mode(backend),
                     )
                 except Exception as exc:  # noqa: BLE001
                     st.warning(f"Run log could not be written: {exc}")
@@ -705,6 +716,7 @@ with tabs["Safety Lab"]:
                     latency=result["latency"],
                     path=str(LOG_PATH),
                     world=lab_world,
+                    mode=engine.backend_mode(backend),
                 )
             except Exception as exc:  # noqa: BLE001
                 st.warning(f"Run log could not be written: {exc}")
@@ -1229,28 +1241,70 @@ if HAVE_LOGGER:
             )
 
 # ── Benchmark ─────────────────────────────────────────────────────────────
+def _benchmark_sources() -> list[dict]:
+    """The Benchmark Lab's two sources, each measured on its own.
+
+    The run log is everything this app has ever run; the stored artifact is what
+    the benchmark runner wrote.  They overlap -- the runner logs every run it
+    makes -- so the lab never adds them together, and each is labelled with the
+    file it was read from.  A source that cannot be read is reported and skipped
+    rather than replaced with an empty chart.
+    """
+    sections: list[dict] = []
+
+    records: list[dict] = []
+    if HAVE_LOGGER:
+        try:
+            records = run_logger.load_runs(str(LOG_PATH))
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Run log could not be read: {exc}")
+    sections.append({
+        "id": "log",
+        "title": "Run log - every run this app has made",
+        "source": "appended by the app and by the benchmark runner",
+        "path": str(LOG_PATH.relative_to(ROOT)),
+        "note": "a run's mode is recorded when it is logged",
+        "rows": benchmark_panel.rows(records, "run log"),
+    })
+
+    stored: list[dict] = []
+    if BENCHMARK_JSON.exists():
+        try:
+            data = json.loads(BENCHMARK_JSON.read_text(encoding="utf-8"))
+            stored = data if isinstance(data, list) else []
+        except (OSError, json.JSONDecodeError) as exc:
+            st.warning(f"benchmarks/results.json could not be read: {exc}")
+    sections.append({
+        "id": "artifact",
+        "title": "Stored benchmark artifact - benchmarks/results.json",
+        "source": "written by python -m gemmabot.benchmark",
+        "path": str(BENCHMARK_JSON.relative_to(ROOT)),
+        "note": "the runner also appends to the run log, so these runs appear above too",
+        "rows": benchmark_panel.rows(stored, "stored benchmark artifact"),
+    })
+    return sections
+
+
 if HAVE_BENCHMARK:
     with tabs["Benchmark"]:
+        _sections = _benchmark_sources()
         st.markdown(
-            DS.section_title("Benchmark results"), unsafe_allow_html=True
+            benchmark_panel.panel(
+                benchmark_panel.intro_html(_sections)
+                + f"<div style='height:{S.px(S.MD)}'></div>"
+                + benchmark_panel.caveats_html(_sections)
+                + f"<div style='height:{S.px(S.LG)}'></div>"
+                + "".join(
+                    benchmark_panel.section_html(section) for section in _sections
+                )
+            ),
+            unsafe_allow_html=True,
         )
         if BENCHMARK_PATH.exists():
-            st.caption(f"Source: {BENCHMARK_PATH.relative_to(ROOT)}")
-            st.markdown(BENCHMARK_PATH.read_text(encoding="utf-8"))
-        else:
-            st.markdown(
-                DS.card(
-                    f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-                    f"color:{C.TEXT_SECONDARY}'>"
-                    "No benchmark results yet. Generate them with:<br><br>"
-                    f"<code style='color:{C.ACCENT_BLUE}'>"
-                    "python -m gemmabot.benchmark --dry</code><br><br>"
-                    "Dry mode uses fake models — no network, no API credits. "
-                    "Drop <code>--dry</code> to benchmark real backends.<br><br>"
-                    f"<span style='color:{C.TEXT_MUTED}'>Results are written to "
-                    "benchmarks/results.md and benchmarks/results.json.</span>"
-                    "</div>",
-                    title="No results",
-                ),
-                unsafe_allow_html=True,
-            )
+            with st.expander("Raw stored artifact - benchmarks/results.md"):
+                st.caption(
+                    "Written by python -m gemmabot.benchmark and shown verbatim. "
+                    "The lab above is the measured view of the same runs; each "
+                    "row there carries the mode it was run in."
+                )
+                st.markdown(BENCHMARK_PATH.read_text(encoding="utf-8"))

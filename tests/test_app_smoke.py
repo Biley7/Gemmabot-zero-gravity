@@ -530,3 +530,60 @@ def test_replay_picker_follows_a_newly_logged_replayable_run(monkeypatch):
     assert _selectbox(at, "Plan to replay").value == (
         "Attempt 1 — rejected · 1 action"
     )
+
+
+def test_benchmark_lab_separates_live_from_synthetic(monkeypatch):
+    """Phase 8: live measurements and scripted runs are never merged."""
+    from gemmabot import logger as run_logger
+
+    log = [
+        # Logged before the mode existed: it cannot be attributed to either side.
+        {"timestamp": "2026-10-04T10:00:00+00:00", "instruction": "an older run",
+         "backend": "api", "success": True, "attempts": 1, "latency": 38.37},
+        # A scripted reader, named as one.
+        {"timestamp": "2026-10-04T10:05:00+00:00", "instruction": "a dry run",
+         "backend": "dry_model", "success": True, "attempts": 2, "latency": 0.0},
+        # Real model runs, recorded as such.
+        {"timestamp": "2026-10-06T19:15:20+00:00", "instruction": "live one",
+         "backend": "api", "mode": "live", "success": True, "attempts": 2,
+         "latency": 2.0, "actions": [{"cmd": "forward", "steps": 2}]},
+        {"timestamp": "2026-10-06T19:16:20+00:00", "instruction": "live two",
+         "backend": "api", "mode": "live", "success": False, "attempts": 3,
+         "latency": 4.0},
+        {"timestamp": "2026-10-06T19:17:20+00:00", "instruction": "scripted",
+         "backend": "dry", "mode": "synthetic", "success": True, "attempts": 1,
+         "latency": 0.0},
+    ]
+    monkeypatch.setattr(run_logger, "load_runs",
+                        lambda path=None, **kwargs: list(log))
+
+    at = _run_app()
+    assert not at.exception, [element.value for element in at.exception]
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "Benchmark Lab" in rendered
+
+    # The two sides are separate columns, and the unclassifiable runs sit apart
+    # rather than being counted with either.
+    assert "data-mode='live'" in rendered
+    assert "data-mode='synthetic'" in rendered
+    assert "data-mode='unclassified'" in rendered
+    assert "excluded from both columns" in rendered
+
+    # Five runs, and each one counted on exactly one side.
+    assert "data-fact='runs' data-value='5'" in rendered
+    assert "data-fact='live' data-value='2'" in rendered
+    assert "data-fact='synthetic' data-value='2'" in rendered
+    assert "data-fact='unclassified' data-value='1'" in rendered
+
+    # Metrics are drawn per mode and carry their own denominators.
+    assert rendered.count("data-metric='success'") >= 2
+    assert "data-value='50%'" in rendered          # 1 of 2 live runs passed
+    assert "data-value='100%'" in rendered         # both scripted runs did
+    assert "data-n='2'" in rendered
+
+    # Both chart treatments are present, and the axes are labelled.
+    assert "gb-bench-min-row" in rendered
+    assert "gb-bench-tech-panel" in rendered
+    assert "not comparable" in rendered
+    assert "Read this first" in rendered

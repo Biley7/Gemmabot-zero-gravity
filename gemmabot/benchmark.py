@@ -5,12 +5,18 @@ Owner: BACKEND
 Measures success rate, average attempts, and latency for each backend and
 repair setting (max_tries=1 = no repair, max_tries=3 = with repair).
 
+Every record states its own ``mode``: ``"live"`` when a model really answered,
+``"synthetic"`` when the scripted reader did.  That is what keeps a dry run from
+being read as a measurement of a model it never called.  ``--dry`` replaces the
+backends entirely, so it is recorded as the single ``dry`` backend rather than as
+whatever names it was asked for.
+
 Usage
 -----
     python -m gemmabot.benchmark --backend ollama          # default
     python -m gemmabot.benchmark --backend api
     python -m gemmabot.benchmark --backend both
-    python -m gemmabot.benchmark --dry                     # fake model, no network
+    python -m gemmabot.benchmark --dry                     # scripted reader, no network
     python -m gemmabot.benchmark --backend ollama --runs 5
 
 Public API
@@ -181,6 +187,7 @@ def run_benchmark(
     max_tries_list: tuple[int, ...] = (1, 3),
     delay: float = 2.0,
     dry: bool = False,
+    log_path: str = "logs/runs.jsonl",
 ) -> list[dict]:
     """Run the full benchmark matrix.
 
@@ -199,12 +206,18 @@ def run_benchmark(
         Seconds to sleep between real API calls.
     dry:
         If True, ignore *backends* and use fake ask functions.
+    log_path:
+        Run log to append each run to, so the benchmark's runs reach the same
+        log the app reads and stay replayable from it.
 
     Returns
     -------
     list[dict]
         One record per individual run with keys:
-        backend, case, max_tries, run, success, attempts, latency, error.
+        backend, requested_backend, mode, case, max_tries, run, success,
+        attempts, latency, error.  ``mode`` is ``"synthetic"`` for a dry run and
+        ``"live"`` otherwise; in dry mode ``backend`` is the scripted reader and
+        ``requested_backend`` keeps the name the matrix was asked for.
     """
     total_calls = len(backends) * len(cases) * len(max_tries_list) * runs_per_case
     print(f"\nBenchmark plan: {len(backends)} backend(s) × {len(cases)} cases × "
@@ -220,6 +233,12 @@ def run_benchmark(
 
     results: list[dict] = []
     call_count = 0
+    mode = "synthetic" if dry else "live"
+
+    if dry:
+        print("dry mode: one scripted reader answers every case, so the backend "
+              "column is not a comparison — the runs are recorded as backend "
+              "'dry', mode 'synthetic'.\n")
 
     for backend_name, ask_fn in backends.items():
         for case in cases:
@@ -262,7 +281,9 @@ def run_benchmark(
                     latency = time.perf_counter() - t0
 
                     record = {
-                        "backend":   backend_name,
+                        "backend":   "dry" if dry else backend_name,
+                        "requested_backend": backend_name,
+                        "mode":      mode,
                         "case":      case["name"],
                         "max_tries": max_tries,
                         "run":       run_idx,
@@ -273,14 +294,19 @@ def run_benchmark(
                     }
                     results.append(record)
 
-                    # Persist to log.
+                    # Persist to log — with the world and the plan, so the run
+                    # stays replayable, and with its mode, so the log separates
+                    # scripted runs from real ones.
                     log_run(
                         instruction=case["instruction"],
-                        backend=backend_name,
+                        backend=record["backend"],
                         actions=actions,
                         attempts=attempts,
                         history=history,
                         latency=latency,
+                        path=log_path,
+                        world=copy.deepcopy(case["world"]),
+                        mode=mode,
                     )
 
                     status = "✓" if record["success"] else "✗"
@@ -303,54 +329,75 @@ def summarize(results: list[dict]) -> str:
     """Build a Markdown summary table from benchmark results.
 
     Returns a string with:
-    - An aggregate table: backend × max_tries → success %, avg attempts, avg latency
+    - An aggregate table: backend × mode × max_tries → success %, avg attempts,
+      avg latency
     - A per-case breakdown table
+
+    The mode column is not decoration: a synthetic (scripted) row and a live one
+    are different measurements and must never be read as one comparison.
     """
     if not results:
         return "_No results to summarize._\n"
 
     from collections import defaultdict
 
-    # ── Aggregate: (backend, max_tries) ──────────────────────────────────
+    modes = sorted({r.get("mode") or "unrecorded" for r in results})
+    header_note = ""
+    if len(modes) > 1:
+        header_note = (
+            "> **Mixed modes.** These rows mix " +
+            ", ".join(f"`{m}`" for m in modes) +
+            " runs. Only `live` rows measure a model; `synthetic` rows measure "
+            "the scripted reader and the repair loop.\n"
+        )
+    elif modes and modes[0] == "synthetic":
+        header_note = (
+            "> **Synthetic runs only.** Every row below was answered by the "
+            "scripted reader (`--dry`), not by a model. These numbers measure "
+            "the planning loop and the repair setting — not model accuracy.\n"
+        )
+
+    # ── Aggregate: (backend, mode, max_tries) ────────────────────────────
     agg: dict[tuple, list[dict]] = defaultdict(list)
     for r in results:
-        agg[(r["backend"], r["max_tries"])].append(r)
+        agg[(r["backend"], r.get("mode") or "unrecorded", r["max_tries"])].append(r)
 
     agg_lines = [
         "## Aggregate results\n",
-        "| Backend | max_tries | Success % | Avg attempts | Avg latency (s) | Runs |",
-        "|---------|-----------|----------:|-------------:|----------------:|-----:|",
+        "| Backend | Mode | max_tries | Success % | Avg attempts | Avg latency (s) | Runs |",
+        "|---------|------|-----------|----------:|-------------:|----------------:|-----:|",
     ]
-    for (backend, mt), rows in sorted(agg.items()):
+    for (backend, mode, mt), rows in sorted(agg.items()):
         n = len(rows)
         sr = 100.0 * sum(r["success"] for r in rows) / n
         aa = sum(r["attempts"] for r in rows) / n
         al = sum(r["latency"] for r in rows) / n
         repair_label = "no repair" if mt == 1 else f"repair ≤{mt}"
         agg_lines.append(
-            f"| {backend} | {mt} ({repair_label}) | {sr:.0f}% | {aa:.2f} | {al:.3f} | {n} |"
+            f"| {backend} | {mode} | {mt} ({repair_label}) | {sr:.0f}% | {aa:.2f} | {al:.3f} | {n} |"
         )
 
-    # ── Per-case breakdown: (backend, case, max_tries) ────────────────────
+    # ── Per-case breakdown: (backend, mode, case, max_tries) ──────────────
     case_agg: dict[tuple, list[dict]] = defaultdict(list)
     for r in results:
-        case_agg[(r["backend"], r["case"], r["max_tries"])].append(r)
+        case_agg[(r["backend"], r.get("mode") or "unrecorded", r["case"],
+                  r["max_tries"])].append(r)
 
     case_lines = [
         "\n## Per-case breakdown\n",
-        "| Backend | Case | max_tries | Success % | Avg attempts | Avg latency (s) |",
-        "|---------|------|-----------|----------:|-------------:|----------------:|",
+        "| Backend | Mode | Case | max_tries | Success % | Avg attempts | Avg latency (s) |",
+        "|---------|------|------|-----------|----------:|-------------:|----------------:|",
     ]
-    for (backend, case, mt), rows in sorted(case_agg.items()):
+    for (backend, mode, case, mt), rows in sorted(case_agg.items()):
         n = len(rows)
         sr = 100.0 * sum(r["success"] for r in rows) / n
         aa = sum(r["attempts"] for r in rows) / n
         al = sum(r["latency"] for r in rows) / n
         case_lines.append(
-            f"| {backend} | {case} | {mt} | {sr:.0f}% | {aa:.2f} | {al:.3f} |"
+            f"| {backend} | {mode} | {case} | {mt} | {sr:.0f}% | {aa:.2f} | {al:.3f} |"
         )
 
-    return "\n".join(agg_lines) + "\n" + "\n".join(case_lines) + "\n"
+    return header_note + "\n".join(agg_lines) + "\n" + "\n".join(case_lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +424,10 @@ def save_results(
     md_path = out.with_suffix(".md")
     with md_path.open("w", encoding="utf-8") as fh:
         fh.write("# GemmaBot Benchmark Results\n\n")
+        fh.write(
+            "Each row carries the mode it was run in: `live` rows were answered "
+            "by a model, `synthetic` rows by the scripted reader.\n\n"
+        )
         fh.write(summarize(results))
     print(f"[benchmark] Saved markdown table → {md_path}")
 
@@ -395,7 +446,7 @@ def _build_parser():
         "--backend",
         choices=["ollama", "api", "both"],
         default="ollama",
-        help="Which model backend to use (default: ollama).",
+        help="Which model backend to use (default: ollama). Ignored by --dry.",
     )
     p.add_argument(
         "--runs",
@@ -406,7 +457,11 @@ def _build_parser():
     p.add_argument(
         "--dry",
         action="store_true",
-        help="Use a fake ask function — no network calls, free to run.",
+        help=(
+            "Use a scripted reader instead of a model — no network, no credits. "
+            "It answers every case, so --backend is ignored and the runs are "
+            "recorded as backend 'dry', mode 'synthetic'."
+        ),
     )
     p.add_argument(
         "--delay",
@@ -422,16 +477,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.dry:
-        # Fake backends — one per name so the table shows separate rows.
-        backends: dict[str, Callable] = {}
-        names = (
-            ["ollama", "api"] if args.backend == "both"
-            else [args.backend]
-        )
-        # The actual callable is replaced per-case inside run_benchmark when
-        # dry=True, but we need a placeholder to drive the matrix.
-        for name in names:
-            backends[name] = lambda i, w: "{}"   # never actually called
+        # One scripted reader for every case, so there is no backend dimension to
+        # measure.  Recording two identical "ollama" and "api" rows would imply a
+        # comparison that never happened.
+        backends: dict[str, Callable] = {"dry": lambda i, w: "{}"}
+        print("dry mode replaces the backends: --backend is ignored.")
     else:
         # Real backends — lazy import so the module loads without google/ollama.
         from backend.planner.planner import ask_api, ask_ollama  # noqa: PLC0415

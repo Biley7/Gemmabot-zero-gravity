@@ -238,6 +238,22 @@ def backend_label(backend: str) -> str:
     return BACKEND_DISPLAY.get(name, backend or "—")
 
 
+# The two provenances a run can have.  ``live`` means a model produced the
+# replies; ``synthetic`` means a scripted reader did.  Nothing in between: a
+# benchmark that mixes them without saying so is measuring nothing.
+MODE_LIVE = "live"
+MODE_SYNTHETIC = "synthetic"
+
+def backend_mode(backend_name: str) -> str:
+    """``"live"`` or ``"synthetic"`` for the backend the caller is about to use.
+
+    Only the scripted dry reader is synthetic; every other selection calls a real
+    model endpoint.  Callers record this on the run so the benchmark never has to
+    infer provenance from a run's numbers.
+    """
+    return MODE_SYNTHETIC if _normalise(backend_name) == DRY_BACKEND else MODE_LIVE
+
+
 def backend_model(backend: str) -> str | None:
     """The model id ``gemmabot.config`` holds for *backend*, or ``None``.
 
