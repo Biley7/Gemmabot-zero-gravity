@@ -43,6 +43,7 @@ from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
 from frontend.panels import brain
+from frontend.panels import replay as replay_panel
 from frontend.panels import safety
 from frontend.panels import vision
 from frontend.simulation import player as playback
@@ -116,6 +117,11 @@ def _init_state() -> None:
     st.session_state.setdefault("safety_autoplay", False)
     st.session_state.setdefault("vision_result", None)
     st.session_state.setdefault("vision_loaded", False)
+    st.session_state.setdefault("log_replay", None)
+    st.session_state.setdefault("log_replay_autoplay", False)
+    st.session_state.setdefault("replay_run", None)
+    st.session_state.setdefault("replay_auto_run", None)
+    st.session_state.setdefault("replay_plan_run", None)
 
 
 _init_state()
@@ -181,6 +187,20 @@ def _render_safety_replay(attempt: dict) -> None:
 def _safety_pick_changed() -> None:
     """Replay the attempt that was just selected (one shot)."""
     st.session_state.safety_autoplay = True
+
+
+def _render_log_replay(timeline: dict) -> None:
+    """The same player, pointed at a run replayed from the log.
+
+    Nothing is asked of a model: *timeline* was built by ``replay.timeline``
+    from the recorded world and plan, i.e. by ``simulator.step`` alone.
+    """
+    autoplay = bool(st.session_state.pop("log_replay_autoplay", False))
+    st.components.v1.html(
+        player_view.player_html(timeline, autoplay=autoplay),
+        height=player_view.player_height(),
+        scrolling=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +400,8 @@ st.markdown(
 tab_names = ["Text command", "Safety Lab"]
 if HAVE_MAPVISION:
     tab_names.append("Vision Lab")
+if HAVE_LOGGER:
+    tab_names.append("Replay")
 if HAVE_BENCHMARK:
     tab_names.append("Benchmark")
 tabs = dict(zip(tab_names, st.tabs(tab_names)))
@@ -446,10 +468,15 @@ with tabs["Text command"]:
                 status_key, status_detail = brain.attempt_status(record, max_tries)
                 _live_status(status_key, status_detail)
 
+            # The world this run is planned against, captured before execution
+            # moves the robot: it is what the run is logged with, so the run can
+            # later be replayed from the log alone.
+            run_world = copy.deepcopy(st.session_state.world)
+
             _live_status("thinking", f"attempt 1/{max_tries} — asking the model")
             result = engine.run_plan(
                 instruction,
-                st.session_state.world,
+                run_world,
                 backend=backend,
                 max_tries=max_tries,
                 on_attempt=_on_attempt,
@@ -518,6 +545,7 @@ with tabs["Text command"]:
                         result["history"],
                         latency=result["latency"],
                         path=str(LOG_PATH),
+                        world=run_world,
                     )
                 except Exception as exc:  # noqa: BLE001
                     st.warning(f"Run log could not be written: {exc}")
@@ -676,6 +704,7 @@ with tabs["Safety Lab"]:
                     result["history"],
                     latency=result["latency"],
                     path=str(LOG_PATH),
+                    world=lab_world,
                 )
             except Exception as exc:  # noqa: BLE001
                 st.warning(f"Run log could not be written: {exc}")
@@ -1052,6 +1081,152 @@ if HAVE_MAPVISION:
                     reply_label="Vision response",
                     ok_message="✓ Valid world",
                 )
+
+# ── Replay ────────────────────────────────────────────────────────────────
+if HAVE_LOGGER:
+    with tabs["Replay"]:
+        st.markdown(
+            DS.section_title("Replay", icon="⏮"), unsafe_allow_html=True
+        )
+        st.markdown(
+            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
+            f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.LG)}'>"
+            "Every run the app logs records the world it ran on and the plans it "
+            "produced, so a run can be re-run here by the simulator alone. Pure "
+            "replay: no planner, no vision, no network — the movement, the steps "
+            "and the messages are <code>simulator.step</code>'s own output."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        try:
+            records = run_logger.load_runs(path=str(LOG_PATH))
+        except Exception as exc:  # noqa: BLE001 - a broken log must not kill the tab
+            records = []
+            st.warning(f"Could not read {LOG_PATH.name}: {exc}")
+
+        log_runs = replay_panel.runs(records)
+        ready = [item for item in log_runs if item["replayable"]]
+
+        if not log_runs:
+            st.markdown(
+                DS.card(
+                    f"<div style='font-family:{T.FONT_MONO};"
+                    f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY}'>"
+                    "No runs logged yet. Run a plan in <b>Text command</b>, or "
+                    "run a <b>Safety Lab</b> check in dry mode — that one needs "
+                    "no API key and still logs a replayable run. Each run is "
+                    "appended to "
+                    f"<code>{LOG_PATH.relative_to(ROOT)}</code> with the world it "
+                    "ran on, and it can be replayed here.<br><br>"
+                    f"<span style='color:{C.TEXT_MUTED}'>A record logged before "
+                    "worlds were captured is listed but cannot be replayed — "
+                    "there is nothing to run its plan on.</span></div>",
+                    title="Nothing to replay",
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(replay_panel.runs_html(log_runs), unsafe_allow_html=True)
+            st.caption(
+                f"{len(log_runs)} run(s) in {LOG_PATH.relative_to(ROOT)} · "
+                f"{len(ready)} replayable · newest first"
+            )
+
+            run_labels = [
+                f"{item['label']} · {item['backend_label']} · "
+                f"{item['latency_label']} · {item['attempts_label']} attempt(s)"
+                for item in log_runs
+            ]
+            # Default the picker to the newest run that can actually be
+            # replayed, so a run logged a moment ago is the one selected rather
+            # than a legacy record that would only leave Replay disabled.  A run
+            # the user picked by hand is never overridden: a pick is told apart
+            # from a default by remembering what the default was last time.
+            auto_label = ready[0]["label"] if ready else run_labels[0]
+            if (
+                st.session_state.get("replay_run") not in run_labels
+                or st.session_state.get("replay_run")
+                == st.session_state.get("replay_auto_run")
+            ):
+                st.session_state.replay_run = auto_label
+            st.session_state.replay_auto_run = auto_label
+
+            picked_label = st.selectbox("Run", run_labels, key="replay_run")
+            picked = log_runs[run_labels.index(picked_label)]
+
+            # A plan is only offered for a run that can actually be replayed:
+            # picking a plan for a record with no world would be a dead end.
+            plan = None
+            plan_labels = (
+                [option["label"] for option in picked["plans"]]
+                if picked["replayable"] else []
+            )
+            # A plan belongs to one run, so switching runs drops the old pick.
+            if st.session_state.get("replay_plan_run") != picked_label:
+                st.session_state.pop("replay_plan", None)
+                st.session_state.replay_plan_run = picked_label
+            if plan_labels:
+                plan_label = st.selectbox(
+                    "Plan to replay", plan_labels, key="replay_plan"
+                )
+                plan = picked["plans"][plan_labels.index(plan_label)]
+
+            if picked["replayable"]:
+                if st.button("Replay", type="primary", key="replay_start"):
+                    timeline = replay_panel.timeline(picked["record"], plan)
+                    if timeline is None:
+                        st.warning(
+                            "This record has no runnable plan to replay."
+                        )
+                    else:
+                        st.session_state.log_replay = {
+                            "run": picked,
+                            "plan": plan,
+                            "timeline": timeline,
+                        }
+                        st.session_state.log_replay_autoplay = True
+                        st.rerun()
+            else:
+                st.button(
+                    "Replay", key="replay_start", type="primary", disabled=True
+                )
+                st.caption(f"Not replayable — {picked['reason']}.")
+
+        shown = st.session_state.log_replay
+        if shown:
+            st.markdown(DS.divider(), unsafe_allow_html=True)
+            st.markdown(
+                replay_panel.meta_html(shown["run"], shown["plan"]),
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                replay_panel.facts_html(replay_panel.facts_rows(shown["run"])),
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(DS.section_title("Timeline"), unsafe_allow_html=True)
+            st.markdown(
+                replay_panel.timeline_html(shown["run"], shown["plan"]),
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                DS.section_title("Robot movement"), unsafe_allow_html=True
+            )
+            st.markdown(
+                f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
+                f"color:{C.TEXT_SECONDARY};margin-bottom:{S.px(S.SM)}'>"
+                f"{shown['run']['label']} · {shown['plan']['label']} — the player "
+                "highlights the action it is on, and the trace behind the robot is "
+                "the path the simulator took.</div>",
+                unsafe_allow_html=True,
+            )
+            _render_log_replay(shown["timeline"])
+            st.markdown(
+                replay_panel.source_html(str(LOG_PATH.relative_to(ROOT)), shown["run"]),
+                unsafe_allow_html=True,
+            )
 
 # ── Benchmark ─────────────────────────────────────────────────────────────
 if HAVE_BENCHMARK:

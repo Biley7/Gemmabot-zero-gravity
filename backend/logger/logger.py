@@ -5,7 +5,7 @@ Owner: BACKEND
 Public API
 ----------
 log_run(instruction, backend, actions, attempts, history,
-        latency=None, path="logs/runs.jsonl") -> dict
+        latency=None, path="logs/runs.jsonl", world=None) -> dict
     Appends one JSONL record to *path* and returns it.
 
 load_runs(path="logs/runs.jsonl") -> list[dict]
@@ -13,6 +13,15 @@ load_runs(path="logs/runs.jsonl") -> list[dict]
 
 summarize_run(record) -> str
     One human-readable paragraph suitable for a UI panel.
+
+Record schema
+-------------
+timestamp, instruction, backend, success, attempts, latency, actions, world,
+history.  ``actions`` is the validated plan and ``world`` the world it was
+verified and executed against — together they let a run be replayed by the
+simulator alone, with no model call.  ``world`` is ``None`` when the caller did
+not supply one, and both keys are absent from records written before they were
+added: a reader must treat missing as "not captured", never as a guess.
 
 Security
 --------
@@ -75,6 +84,7 @@ def log_run(
     history: list[dict],
     latency: float | None = None,
     path: str = "logs/runs.jsonl",
+    world: dict | None = None,
 ) -> dict:
     """Build and persist one run record.
 
@@ -95,6 +105,11 @@ def log_run(
         Total wall-clock time in seconds, or ``None`` if not measured.
     path:
         JSONL file path to append to.  Parent directory is created if needed.
+    world:
+        The world the plan was verified and executed against, captured before
+        execution moved the robot.  Recorded so the run can be replayed later by
+        the simulator alone — passing it is what makes a record replayable.
+        ``None`` when the caller does not have one to hand.
 
     Returns
     -------
@@ -108,6 +123,10 @@ def log_run(
         "success": actions is not None,
         "attempts": attempts,
         "latency": latency,
+        # The plan and the world it ran on: a replay needs both, and neither can
+        # be reconstructed from the replies afterwards.
+        "actions": copy.deepcopy(actions) if isinstance(actions, list) else None,
+        "world": copy.deepcopy(world) if isinstance(world, dict) else None,
         "history": history,
     }
 
@@ -285,6 +304,46 @@ if __name__ == "__main__":
         assert rec1["latency"] == 1.42
         assert len(rec1["history"]) == 2
         assert "timestamp" in rec1
+
+        # ── The plan and the world are recorded for replay ───────────────
+        # Written to their own file so the record counts below stay exact.
+        print(SEP)
+        print("Replay fields: plan + world")
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as _fh:
+            REPLAY_PATH = _fh.name
+        try:
+            REPLAY_WORLD = {"robot": [0, 0], "dir": "E", "goal": [6, 5],
+                            "walls": [[3, 0]]}
+            rec_w = log_run(
+                instruction="navigate to the goal",
+                backend="dry",
+                actions=[{"cmd": "forward", "steps": 2}],
+                attempts=1,
+                history=[{"attempt": 1, "prompt": "p", "reply": "r",
+                          "ok": True, "feedback": "ok"}],
+                latency=0.0,
+                path=REPLAY_PATH,
+                world=REPLAY_WORLD,
+            )
+            print(f"  actions       : {rec_w['actions']}")
+            print(f"  world captured: {rec_w['world'] == REPLAY_WORLD}")
+            assert rec_w["actions"] == [{"cmd": "forward", "steps": 2}]
+            assert rec_w["world"] == REPLAY_WORLD
+            REPLAY_WORLD["robot"][0] = 9    # caller's copy must not alias
+            assert rec_w["world"]["robot"] == [0, 0], \
+                "world must be captured by value"
+            assert load_runs(path=REPLAY_PATH)[0]["world"]["robot"] == [0, 0]
+            rec_bare = log_run("i", "api", None, 1, [], path=REPLAY_PATH)
+            assert rec_bare["world"] is None and rec_bare["actions"] is None
+        finally:
+            _os.unlink(REPLAY_PATH)
+
+        # A record written before these keys existed still summarizes fine.
+        legacy = {"timestamp": "t", "instruction": "i", "backend": "api",
+                  "success": False, "attempts": 2, "latency": 1.0,
+                  "history": [{"attempt": 1, "prompt": "p", "reply": "r",
+                               "ok": False, "feedback": "nope"}]}
+        assert "Failed" in summarize_run(legacy)
 
         # ── Log a failed run ──────────────────────────────────────────────
         print(SEP)
