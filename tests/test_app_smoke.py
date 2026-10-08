@@ -638,6 +638,28 @@ def test_every_primary_action_wires_the_shortcut_its_tooltip_names():
     assert any("Command" in c and "Ctrl" in c for c in captions), captions
 
 
+def test_every_control_explains_itself_on_hover():
+    """A control whose effect is not obvious from its label carries a tooltip.
+
+    The two model calls, the map picker and Reset world all do something the
+    label cannot say (which backend, what gets cleared), so an unlabelled one is
+    a control the operator has to guess at.
+    """
+    at = _run_app()
+    assert not at.exception, [element.value for element in at.exception]
+
+    # Guard against a vacuous pass: the app has to actually render controls.
+    assert len(at.button) >= 7, [button.label for button in at.button]
+
+    bare = [button.label for button in at.button if not button.help]
+    assert not bare, f"these buttons have no tooltip: {bare}"
+
+    for widget in list(at.sidebar.radio) + list(at.sidebar.number_input) + list(
+        at.sidebar.selectbox
+    ):
+        assert widget.help, f"sidebar widget {widget.label!r} has no tooltip"
+
+
 def test_the_stylesheet_is_still_on_the_page_after_a_rerun():
     """Every button press rebuilds the DOM; the theme has to be rebuilt with it.
 
