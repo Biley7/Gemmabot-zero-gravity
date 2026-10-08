@@ -587,3 +587,98 @@ def test_benchmark_lab_separates_live_from_synthetic(monkeypatch):
     assert "gb-bench-tech-panel" in rendered
     assert "not comparable" in rendered
     assert "Read this first" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Phase 9: shortcuts, tooltips, and no stale results
+# ---------------------------------------------------------------------------
+
+# The keys each primary action wires, and the label the reference shows for
+# them.  Streamlit resolves "mod" to "ctrl" on every platform, so the label
+# names Ctrl outright and the button's proto carries the same normalised form.
+WIRED_SHORTCUTS = {
+    "Run plan": ("ctrl+enter", "Mod+Enter"),
+    "Run safety check": ("ctrl+shift+enter", "Mod+Shift+Enter"),
+    "Read map": ("ctrl+shift+m", "Mod+Shift+M"),
+    "Replay": ("ctrl+shift+l", "Mod+Shift+L"),
+}
+
+# Reserved combos the browser swallows before the page sees them, and the keys
+# Streamlit forbids outright, would silently make a documented shortcut a lie.
+BROWSER_RESERVED_PROTOS = {
+    "ctrl+t", "ctrl+w", "ctrl+n", "ctrl+l", "ctrl+tab", "ctrl+shift+t",
+    "ctrl+shift+n", "ctrl+shift+w", "ctrl+shift+tab", "alt+f4", "f11",
+}
+
+
+def test_every_primary_action_wires_the_shortcut_its_tooltip_names():
+    """A documented key that does nothing is worse than no documentation."""
+    at = _run_app()
+    assert not at.exception, [element.value for element in at.exception]
+
+    for label, (proto, shown) in WIRED_SHORTCUTS.items():
+        button = _button(at, label)
+        assert button.proto.shortcut == proto, label
+        assert button.help, f"{label} has no tooltip"
+        assert shown in button.help, f"{label} tooltip does not name its key"
+        # A combo the browser or Streamlit already owns would never fire.
+        assert proto not in BROWSER_RESERVED_PROTOS, label
+
+    # The sidebar reference lists exactly the keys the buttons carry.
+    assert "Keyboard" in [expander.label for expander in at.sidebar.expander]
+    rendered = "\n".join(element.value for element in at.markdown)
+    for label, (_, shown) in WIRED_SHORTCUTS.items():
+        assert f">{label}" in rendered, label
+        assert shown in rendered, shown
+
+    # "Mod" is not a key.  Anything that documents it has to say which key it
+    # means, or the reference sends the reader hunting for a modifier key.
+    captions = [c.value for c in at.sidebar.caption]
+    assert any("Mod" in c for c in captions), "Mod is never explained"
+    assert any("Command" in c and "Ctrl" in c for c in captions), captions
+
+
+def test_the_stylesheet_is_still_on_the_page_after_a_rerun():
+    """Every button press rebuilds the DOM; the theme has to be rebuilt with it.
+
+    The stylesheet carries the focus rings, the .gb-* classes the panels use and
+    the responsive rules, so losing it after the first interaction is the whole
+    design system silently disappearing mid-session.
+    """
+    marker = ":focus-visible"
+    at = _run_app()
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert marker in rendered, "theme missing on the first run"
+
+    at.run()  # what any widget interaction does
+    assert not at.exception, [element.value for element in at.exception]
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert marker in rendered, "theme missing after a rerun"
+    assert ".gb-empty" in rendered
+
+
+def test_switching_the_map_drops_results_measured_on_the_previous_one():
+    """The Safety Lab must not keep showing a plan for a world that is gone."""
+    at = _run_app()
+    _button(at, "Run safety check").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+    assert at.session_state["safety_result"] is not None
+    assert at.session_state["last_run"] is not None
+    assert at.session_state["world"]["robot"] == [0, 0]
+
+    at.sidebar.selectbox[0].select("sample").run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    # The new world is active and nothing measured on the old one survives.
+    assert at.session_state["world"]["goal"] == [7, 7]
+    assert at.session_state["safety_result"] is None
+    assert at.session_state["last_run"] is None
+    assert at.session_state["text_result"] is None
+    assert at.session_state["replay"] is None
+    assert at.session_state["logs"] == []
+    # Derived, not remembered: the simulator is on the scanned map only when
+    # the scanned map is the active one.
+    assert at.session_state["vision_loaded"] is False
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "No run in this session yet." in rendered      # the sidebar empty state

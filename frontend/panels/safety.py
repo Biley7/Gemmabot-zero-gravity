@@ -27,13 +27,17 @@ timeline_html(stages)      the chips: ✓ Proposal ✕ Collision ↻ Repair ✓ 
 """
 from __future__ import annotations
 
-import html as _html
-
 from backend.verifier.harness import verify_plan
 from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.components.blocks import (
+    empty_state,
+    escape as _e,
+    fact_cards,
+    plural as _plural,
+)
 from frontend.simulation import player as playback
 
 # ── The loop's shape (the pipeline diagram) ───────────────────────────────────
@@ -81,8 +85,6 @@ _CHECK_KIND: dict[str, str] = {
     "goal_reachable": "missed",
 }
 
-def _e(value: object) -> str:
-    return _html.escape(str(value))
 
 
 def _cell_text(cell: list | None) -> str:
@@ -92,8 +94,6 @@ def _cell_text(cell: list | None) -> str:
     return f"[{int(cell[0])}, {int(cell[1])}]"
 
 
-def _plural(count: int, noun: str) -> str:
-    return f"{count} {noun}" if int(count) == 1 else f"{int(count)} {noun}s"
 
 
 # ---------------------------------------------------------------------------
@@ -401,31 +401,8 @@ def events_html(stage_list: list[dict]) -> str:
 
 def facts_html(summary_data: dict) -> str:
     """The four readouts: collision location, error, repair attempt, success."""
-    cards = []
-    for row in facts_rows(summary_data):
-        color = {
-            "success": C.SUCCESS, "error": C.ERROR,
-            "warning": C.WARNING, "neutral": C.TEXT_PRIMARY,
-        }[row["state"]]
-        cards.append(
-            f"<div class='gb-safety-fact' data-fact='{_e(row['id'])}' "
-            f"data-state='{_e(row['state'])}' style='display:flex;flex-direction:column;"
-            f"gap:{S.px(S.XS)};padding:{S.px(S.SM)} {S.px(S.MD)};"
-            f"background:{C.BG_SURFACE};border:1px solid {C.BORDER_SUBTLE};"
-            f"border-radius:{S.px(S.RADIUS_MD)}'>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-            f"text-transform:uppercase'>{_e(row['label'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_BASE}px;"
-            f"color:{color}'>{_e(row['value'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED}'>{_e(row['detail'])}</span>"
-            f"</div>"
-        )
-    return (
-        f"<div style='display:grid;"
-        f"grid-template-columns:repeat(auto-fit,minmax({S.px(190)},1fr));"
-        f"gap:{S.px(S.SM)}'>" + "".join(cards) + "</div>"
+    return fact_cards(
+        facts_rows(summary_data), css_class="gb-safety-fact", column_min=190
     )
 
 

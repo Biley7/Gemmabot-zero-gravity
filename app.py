@@ -48,6 +48,7 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.components.blocks import empty_state
 from frontend.panels import benchmark as benchmark_panel
 from frontend.panels import brain
 from frontend.panels import replay as replay_panel
@@ -59,6 +60,30 @@ from frontend.simulation import player_view
 ROOT = Path(__file__).parent
 LOG_PATH = ROOT / "logs" / "runs.jsonl"
 BENCHMARK_PATH = ROOT / "benchmarks" / "results.md"
+
+# ── Keyboard shortcuts ──────────────────────────────────────────────────────
+# Defined once, then used for both the buttons and the reference list in the
+# sidebar, so the help can never document a key that is not wired.
+#
+# "Mod" is not a key: it is Streamlit's name for the reader's primary modifier.
+# Verified in the shipped frontend (static/js/index.*.js): the button hint renders
+# the token `ctrl` through Ld={ctrl:`Ctrl`, cmd:`⌘`, mod:`Mod`} selected by an
+# is-Mac check, and the handler binds the platform form (`command+enter` on macOS).
+# So on a Mac the button paints "⌘ + Enter" and ⌘+Enter is what fires; elsewhere
+# it is Ctrl.  That is why the labels below stay modifier-neutral and the sidebar
+# spells out which physical key that is.
+#
+# The server-side proto for all four stays `ctrl+...` (Streamlit maps "mod" to
+# "ctrl" unconditionally in shortcut_utils.py) - an internal token, not the key.
+SHORTCUTS: dict[str, str] = {
+    "plan": "Mod+Enter",
+    "safety": "Mod+Shift+Enter",
+    "read_map": "Mod+Shift+M",
+    "replay": "Mod+Shift+L",
+}
+# A run the app is waiting on for this many log lines; the sidebar shows the
+# last ten and nothing reads the older ones.
+LOG_LINE_CAP = 200
 BENCHMARK_JSON = ROOT / "benchmarks" / "results.json"
 
 # ── Optional backend modules: the app must start without them ─────────────
@@ -139,15 +164,42 @@ _init_state()
 # Callbacks
 # ---------------------------------------------------------------------------
 
-def _reset_world() -> None:
-    name = st.session_state.map_name
-    st.session_state.world = copy.deepcopy(st.session_state.map_source[name])
+def _clear_results() -> None:
+    """Drop every result measured on a world that is no longer the active one.
+
+    A console that keeps showing the last run's verdict after the map changed is
+    worse than one showing nothing: the numbers still look live.  Called by
+    anything that moves the simulator to another world.
+    """
     st.session_state.logs = []
     st.session_state.text_result = None
     st.session_state.replay = None
-    # Switching maps away from the scanned one means the Vision Lab's world is
-    # no longer what the simulator is on, so its last stage stops claiming it.
-    st.session_state.vision_loaded = False
+    st.session_state.last_run = None
+    st.session_state.safety_result = None
+    st.session_state.safety_autoplay = False
+
+
+def _adopt_world(name: str) -> None:
+    """Point the simulator at map *name* and clear what belonged to the old one."""
+    st.session_state.world = copy.deepcopy(st.session_state.map_source[name])
+    _clear_results()
+    # Derived, not remembered: the simulator is on the scanned map exactly when
+    # the scanned map is the active one.
+    st.session_state.vision_loaded = name == "scanned"
+
+
+def _reset_world() -> None:
+    _adopt_world(st.session_state.map_name)
+
+
+def _shortcut_rows() -> list[tuple[str, str]]:
+    """The shortcut reference, read from the same dict the buttons use."""
+    return [
+        ("Run plan", SHORTCUTS["plan"]),
+        ("Run safety check", SHORTCUTS["safety"]),
+        ("Read map", SHORTCUTS["read_map"]),
+        ("Replay", SHORTCUTS["replay"]),
+    ]
 
 
 def _load_vision_into_simulator() -> None:
@@ -166,10 +218,9 @@ def _load_vision_into_simulator() -> None:
     st.session_state.map_name = "scanned"
     st.session_state.map_picker = "scanned"
     st.session_state.world = copy.deepcopy(scanned)
-    st.session_state.logs = []
-    st.session_state.text_result = None
-    st.session_state.replay = None
     st.session_state.vision_loaded = True
+    # Whatever was measured on the old map is not about this one.
+    _clear_results()
 
 
 def _render_replay(replay: dict) -> None:
@@ -306,7 +357,12 @@ st.sidebar.markdown(
     DS.section_title("Control Panel"), unsafe_allow_html=True
 )
 
-engine_choice = st.sidebar.radio("Engine", list(ENGINE_BACKENDS.keys()))
+engine_choice = st.sidebar.radio(
+    "Engine",
+    list(ENGINE_BACKENDS.keys()),
+    help="API is Gemini, Local is Ollama on this machine, Auto tries the API "
+         "and falls back to Ollama. Dry mode is chosen per lab, not here.",
+)
 backend = ENGINE_BACKENDS[engine_choice]
 
 max_tries = int(
@@ -316,6 +372,8 @@ max_tries = int(
         max_value=5,
         value=max(1, MAX_REPAIRS + 1),
         step=1,
+        help="How many planning attempts the loop may make: one proposal plus "
+             "this many repairs. Applies to planning and to map vision.",
     )
 )
 
@@ -328,18 +386,24 @@ chosen_map = st.sidebar.selectbox(
     index=map_index,
     format_func=_map_label,
     key="map_picker",
+    help="The world the simulator is on. Changing it clears the results that "
+         "were measured on the previous map.",
 )
 if chosen_map != st.session_state.map_name:
     st.session_state.map_name = chosen_map
-    st.session_state.world = copy.deepcopy(st.session_state.map_source[chosen_map])
-    st.session_state.logs = []
-    st.session_state.text_result = None
-    st.session_state.last_run = None
-    st.session_state.replay = None
+    _adopt_world(chosen_map)
 
-st.sidebar.button("Reset world", on_click=_reset_world)
+st.sidebar.button(
+    "Reset world",
+    on_click=_reset_world,
+    help="Restores the selected map and clears the results measured on it.",
+)
 
-if st.sidebar.button("Check connections"):
+if st.sidebar.button(
+    "Check connections",
+    help="Looks for a Gemini key in the environment and asks Ollama whether it "
+         "is running. Nothing is sent anywhere.",
+):
     st.session_state.connections = engine.check_connections()
 connections = st.session_state.connections
 if connections:
@@ -366,8 +430,7 @@ if summary:
     st.sidebar.markdown(DS.telemetry_block(rows), unsafe_allow_html=True)
 else:
     st.sidebar.markdown(
-        f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-        f"color:{C.TEXT_MUTED};padding:{S.px(S.XS)} 0'>No runs yet.</div>",
+        empty_state("No run in this session yet.", "Run plan fills this in.", dense=True),
         unsafe_allow_html=True,
     )
 
@@ -379,7 +442,14 @@ if HAVE_LOGGER:
             runs = []
             st.caption(f"Could not read logs: {exc}")
         if not runs:
-            st.caption("No runs logged yet.")
+            st.markdown(
+                empty_state(
+                    "No runs logged yet.",
+                    "Plans, safety checks and benchmark runs all land here.",
+                    dense=True,
+                ),
+                unsafe_allow_html=True,
+            )
         for record in list(reversed(runs))[:10]:
             try:
                 st.markdown(
@@ -391,6 +461,16 @@ if HAVE_LOGGER:
                 )
             except Exception as exc:  # noqa: BLE001
                 st.text(f"(unreadable run: {exc})")
+
+with st.sidebar.expander("Keyboard"):
+    st.markdown(
+        DS.telemetry_block(_shortcut_rows()), unsafe_allow_html=True
+    )
+    st.caption(
+        "“Mod” is Streamlit's name for your primary modifier: ⌘ Command on "
+        "macOS, Ctrl on Windows and Linux. Each button prints the key it "
+        "actually listens for."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +530,13 @@ with tabs["Text command"]:
     if stored_brain:
         _paint_brain(brain_slot, stored_brain)
 
-    if st.button("Run plan", type="primary"):
+    if st.button(
+        "Run plan",
+        type="primary",
+        shortcut=SHORTCUTS["plan"],
+        help="Propose with the model, verify with the harness, repair what fails "
+             f"and execute the accepted plan. Shortcut: {SHORTCUTS['plan']}.",
+    ):
         if not instruction.strip():
             st.warning("Enter an instruction first.")
         else:
@@ -482,13 +568,16 @@ with tabs["Text command"]:
             run_world = copy.deepcopy(st.session_state.world)
 
             _live_status("thinking", f"attempt 1/{max_tries} — asking the model")
-            result = engine.run_plan(
-                instruction,
-                run_world,
-                backend=backend,
-                max_tries=max_tries,
-                on_attempt=_on_attempt,
-            )
+            with st.spinner(
+                f"Asking {engine.backend_label(backend)} — the loop streams above"
+            ):
+                result = engine.run_plan(
+                    instruction,
+                    run_world,
+                    backend=backend,
+                    max_tries=max_tries,
+                    on_attempt=_on_attempt,
+                )
             metrics = ui_helpers.run_metrics(
                 result["actions"], result["attempts"], max_tries, result["latency"]
             )
@@ -503,6 +592,7 @@ with tabs["Text command"]:
                 )
                 st.session_state.world = replay["final_world"]
                 st.session_state.logs.extend(playback.log_lines(replay))
+                del st.session_state.logs[:-LOG_LINE_CAP]
                 st.session_state.replay = replay
                 st.session_state.replay_autoplay = True   # animate this run once
             else:
@@ -663,7 +753,13 @@ with tabs["Safety Lab"]:
             f"the sidebar engine ({engine.backend_label(backend)})."
         )
 
-    if st.button("Run safety check", type="primary"):
+    if st.button(
+        "Run safety check",
+        type="primary",
+        shortcut=SHORTCUTS["safety"],
+        help="Walks one plan through the real verifier: proposal, refusal, "
+             f"repair, then the accepted plan. Shortcut: {SHORTCUTS['safety']}.",
+    ):
         # Dry mode demonstrates on the default world its scripted plans are
         # calibrated to; live mode uses whatever map is loaded.
         lab_world = (
@@ -864,6 +960,10 @@ if HAVE_MAPVISION:
             type="primary",
             key="vision_read",
             disabled=held_image is None,
+            shortcut=SHORTCUTS["read_map"],
+            help="Asks Gemma Vision to turn the image into a world model, then "
+                 "validates it before anything can be loaded. "
+                 f"Shortcut: {SHORTCUTS['read_map']}.",
         ):
             if held_image is None:
                 st.warning("Upload an image first.")
@@ -925,11 +1025,11 @@ if HAVE_MAPVISION:
                 st.markdown(
                     vision.column_html(
                         "image",
-                        f"<div style='font-family:{T.FONT_MONO};"
-                        f"font-size:{T.SIZE_SM}px;color:{C.TEXT_MUTED}'>"
-                        "No image in hand. Upload a maze photo — the built-in "
-                        "sample needs Pillow, which is not installed here."
-                        "</div>",
+                        empty_state(
+                            "No image in hand.",
+                            "Upload a maze photo. The built-in sample needs "
+                            "Pillow, which is not installed here.",
+                        ),
                     ),
                     unsafe_allow_html=True,
                 )
@@ -1028,7 +1128,12 @@ if HAVE_MAPVISION:
 
         # ── Load into simulator ───────────────────────────────────────────
         if world is None:
-            st.button("Load into simulator", key="vision_load", disabled=True)
+            st.button(
+                "Load into simulator",
+                key="vision_load",
+                disabled=True,
+                help="Disabled until a reading has passed every world check.",
+            )
             st.caption(
                 "Nothing to load: no reading has passed validation yet."
             )
@@ -1041,6 +1146,8 @@ if HAVE_MAPVISION:
                 key="vision_load",
                 type="primary",
                 on_click=_load_vision_into_simulator,
+                help="Adopts the validated world as the active map and clears "
+                     "the results measured on the previous one.",
             )
             if loaded:
                 st.markdown(
@@ -1185,7 +1292,14 @@ if HAVE_LOGGER:
                 plan = picked["plans"][plan_labels.index(plan_label)]
 
             if picked["replayable"]:
-                if st.button("Replay", type="primary", key="replay_start"):
+                if st.button(
+                    "Replay",
+                    type="primary",
+                    key="replay_start",
+                    shortcut=SHORTCUTS["replay"],
+                    help="Re-executes the recorded plan in the simulator. No "
+                         f"model is called. Shortcut: {SHORTCUTS['replay']}.",
+                ):
                     timeline = replay_panel.timeline(picked["record"], plan)
                     if timeline is None:
                         st.warning(
@@ -1201,7 +1315,11 @@ if HAVE_LOGGER:
                         st.rerun()
             else:
                 st.button(
-                    "Replay", key="replay_start", type="primary", disabled=True
+                    "Replay",
+                    key="replay_start",
+                    type="primary",
+                    disabled=True,
+                    help="This record cannot be replayed; the reason is below.",
                 )
                 st.caption(f"Not replayable — {picked['reason']}.")
 

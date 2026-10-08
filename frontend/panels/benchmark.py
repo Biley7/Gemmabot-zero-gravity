@@ -42,13 +42,12 @@ intro_html / caveats_html / panel
 """
 from __future__ import annotations
 
-import html as _html
-
 from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
 from frontend.panels.engine import backend_label
+from frontend.components.blocks import empty_state, escape as _e, fact_cards, shell, scroll_x, sub_title
 
 MODE_LIVE = "live"
 MODE_SYNTHETIC = "synthetic"
@@ -101,9 +100,6 @@ DEFINITIONS: dict[str, str] = {
 }
 
 
-def _e(value: object) -> str:
-    """HTML-escape any value to a safe string."""
-    return _html.escape(str(value))
 
 
 def _num(value: object) -> float | None:
@@ -379,41 +375,34 @@ def facts_rows(section: dict) -> list[dict]:
 # HTML — readouts
 # ---------------------------------------------------------------------------
 
-def _shell(body: str) -> str:
-    """A section's surface, so the two sources read as two separate things."""
-    return (
-        f"<div style='background:{C.BG_SURFACE};"
-        f"border:1px solid {C.BORDER_SUBTLE};border-radius:{S.px(S.RADIUS_MD)};"
-        f"padding:{S.px(S.MD)}'>{body}</div>"
-    )
-
-
 def facts_html(section: dict) -> str:
     """The section's four counts, so a reader knows the sample size first."""
-    cards: list[str] = []
-    for row in facts_rows(section):
-        color = MODE_COLORS.get(row["id"], C.TELEMETRY_VALUE)
-        cards.append(
-            f"<div class='gb-bench-fact' data-fact='{_e(row['id'])}' "
-            f"data-value='{_e(row['value'])}' "
-            f"style='display:flex;flex-direction:column;gap:{S.px(S.XS)};"
-            f"padding:{S.px(S.SM)} {S.px(S.MD)};background:{C.BG_ELEVATED};"
-            f"border:1px solid {C.BORDER_SUBTLE};"
-            f"border-radius:{S.px(S.RADIUS_MD)}'>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-            f"text-transform:uppercase'>{_e(row['label'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_LG}px;"
-            f"color:{color}'>{_e(row['value'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED}'>{_e(row['detail'])}</span>"
-            f"</div>"
-        )
-    return (
-        f"<div style='display:grid;"
-        f"grid-template-columns:repeat(auto-fit,minmax({S.px(130)},1fr));"
-        f"gap:{S.px(S.SM)}'>" + "".join(cards) + "</div>"
+    return fact_cards(
+        facts_rows(section),
+        css_class="gb-bench-fact",
+        column_min=130,
+        value_size=T.SIZE_LG,
     )
+
+
+def split_unit(display: str, unit: str) -> tuple[str, str]:
+    """The amount and its unit, ready to be painted side by side exactly once.
+
+    The two fields disagree about who owns the unit.  A rate or a latency keeps
+    it in the display, because the value is formatted *with* it ("100%",
+    "0.20 ms"); a count does not, and leaves it to ``metric['unit']`` (display
+    "1.0", unit "steps").  Painting display and then unit printed it twice for
+    the first kind — "100% %", "0.20 ms ms" — so the suffix is stripped off here
+    when the display already carries it, and left alone when it does not.
+
+    Either way the caller gets a number and its unit and appends the unit once.
+    A placeholder ("—", "no data") is not a measurement, so it is returned
+    without a unit: a unit only belongs on a number.
+    """
+    amount = display[: -len(unit)].rstrip() if unit and display.endswith(unit) else display
+    if not unit or not any(char.isdigit() for char in amount):
+        return display, ""
+    return amount, unit
 
 
 def metrics_html(run_rows: list[dict]) -> str:
@@ -422,6 +411,12 @@ def metrics_html(run_rows: list[dict]) -> str:
     for metric in metrics(run_rows):
         empty = metric["value"] is None
         color = C.TEXT_MUTED if empty else C.TELEMETRY_VALUE
+        amount, unit_token = split_unit(metric["display"], metric["unit"])
+        unit_span = (
+            f"<span style='font-size:{T.SIZE_XS}px;color:{C.TELEMETRY_UNIT}'> "
+            f"{_e(unit_token)}</span>"
+            if unit_token else ""
+        )
         excluded_note = (
             f" · {metric['excluded']} not measured"
             if metric["excluded"] else ""
@@ -438,9 +433,7 @@ def metrics_html(run_rows: list[dict]) -> str:
             f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
             f"text-transform:uppercase'>{_e(metric['label'])}</span>"
             f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_LG}px;"
-            f"color:{color}'>{_e(metric['display'])}"
-            f"<span style='font-size:{T.SIZE_XS}px;color:{C.TELEMETRY_UNIT}'> "
-            f"{'' if empty else _e(metric['unit'])}</span></span>"
+            f"color:{color}'>{_e(amount)}{unit_span}</span>"
             f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
             f"color:{C.TEXT_SECONDARY}'>n = {metric['n']}"
             f"{excluded_note}"
@@ -486,10 +479,10 @@ def chart_minimal(run_rows: list[dict] | None) -> str:
     """
     groups = series(run_rows)
     if not groups:
-        return _shell(
-            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>no runs to chart</div>"
-        )
+        return shell(empty_state(
+            "No runs to chart.",
+            "Live and synthetic runs are charted separately; both are empty here.",
+        ))
 
     lines: list[str] = []
     for group in groups:
@@ -529,7 +522,7 @@ def chart_minimal(run_rows: list[dict] | None) -> str:
         f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.SM)}'>"
         f"both bars share one 0–100% scale</div>"
     )
-    return _shell(legend + "".join(lines))
+    return shell(legend + "".join(lines))
 
 
 def _scale_max(metric_id: str, values: list[float]) -> float:
@@ -586,10 +579,10 @@ def chart_technical(run_rows: list[dict] | None) -> str:
     """
     groups = series(run_rows)
     if not groups:
-        return _shell(
-            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>no runs to chart</div>"
-        )
+        return shell(empty_state(
+            "No runs to chart.",
+            "Live and synthetic runs are charted separately; both are empty here.",
+        ))
 
     panels: list[str] = []
     for metric in metrics(run_rows):
@@ -664,7 +657,7 @@ def chart_technical(run_rows: list[dict] | None) -> str:
         f"each panel has its own scale and its own n — bars from different panels "
         f"are not comparable</div>"
     )
-    return _shell(
+    return shell(
         note + f"<div style='display:grid;"
         f"grid-template-columns:repeat(auto-fit,minmax({S.px(320)},1fr));"
         f"gap:{S.px(S.SM)}'>" + "".join(panels) + "</div>"
@@ -738,11 +731,9 @@ def groups_html(section: dict) -> str:
                 + f"<div style='margin-top:{S.px(S.MD)}'>{chart_minimal(group)}</div>"
             )
         else:
-            body = (
-                f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-                f"color:{C.TEXT_MUTED};padding:{S.px(S.SM)} 0'>"
-                f"no {MODE_LABELS[mode].lower()} runs in this source — nothing is "
-                f"shown rather than a zero</div>"
+            body = empty_state(
+                f"No {MODE_LABELS[mode].lower()} runs in this source.",
+                "Nothing is shown rather than a zero.",
             )
         columns.append(
             f"<div class='gb-bench-group' data-mode='{mode}' "
@@ -799,10 +790,13 @@ def section_html(section: dict) -> str:
         f"{' · ' + _e(section['note']) if section.get('note') else ''}</div>"
     )
     if not section.get("rows"):
-        return _shell(
+        return shell(
             title + source +
-            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>nothing recorded here yet</div>"
+            empty_state(
+                "Nothing recorded here yet.",
+                "Runs this app makes are appended to the run log; the benchmark "
+                "runner also writes a stored artifact.",
+            )
         )
 
     buckets = split(section.get("rows"))
@@ -810,7 +804,7 @@ def section_html(section: dict) -> str:
         title, source, facts_html(section),
         f"<div style='height:{S.px(S.LG)}'></div>", groups_html(section),
         f"<div style='height:{S.px(S.LG)}'></div>",
-        _sub_title("Technical — one chart per mode, one scale per metric"),
+        sub_title("Technical — one chart per mode, one scale per metric"),
     ]
 
     charted = False
@@ -829,28 +823,19 @@ def section_html(section: dict) -> str:
         ]
 
     if not charted:
-        parts.append(
-            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>no live or synthetic runs in this source, so no "
-            f"chart is drawn — charting unclassified runs would invite a "
-            f"comparison their records do not support</div>"
-        )
+        parts.append(empty_state(
+            "No live or synthetic runs in this source, so no chart is drawn.",
+            "Charting unclassified runs would invite a comparison their records "
+            "do not support.",
+        ))
     table = cells_html(section.get("rows") or [])
     if table:
         parts += [
             f"<div style='height:{S.px(S.LG)}'></div>",
-            _sub_title("Per case × repair setting"),
-            _shell(table),
+            sub_title("Per case × repair setting"),
+            shell(scroll_x(table, min_width=640)),
         ]
-    return _shell("".join(parts))
-
-
-def _sub_title(text: str) -> str:
-    return (
-        f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-        f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-        f"text-transform:uppercase;margin-bottom:{S.px(S.SM)}'>{_e(text)}</div>"
-    )
+    return shell("".join(parts))
 
 
 def caveats_html(sections: list[dict]) -> str:
@@ -871,8 +856,8 @@ def caveats_html(sections: list[dict]) -> str:
     items = "".join(
         f"<li style='margin-bottom:{S.px(S.XS)}'>{_e(line)}</li>" for line in lines
     )
-    return _shell(
-        _sub_title("Read this first") +
+    return shell(
+        sub_title("Read this first") +
         f"<ul style='margin:0;padding-left:{S.px(S.LG)};font-family:{T.FONT_SANS};"
         f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY};"
         f"line-height:{T.LEADING_BASE}'>{items}</ul>"
@@ -904,7 +889,7 @@ def intro_html(sections: list[dict]) -> str:
         DS.status_chip(f"{MODE_LABELS[mode]} {counts[mode]}", MODE_STATES[mode])
         for mode in (MODE_LIVE, MODE_SYNTHETIC, UNCLASSIFIED)
     )
-    return _shell(
+    return shell(
         f"<div style='display:flex;align-items:center;gap:{S.px(S.SM)};"
         f"flex-wrap:wrap;margin-bottom:{S.px(S.MD)}'>{modes}</div>"
         f"<div style='font-family:{T.FONT_SANS};font-size:{T.SIZE_BASE}px;"

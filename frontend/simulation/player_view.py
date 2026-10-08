@@ -320,7 +320,7 @@ html, body {{
   cursor: pointer; transition: background 150ms {A.EASE_OUT}, border-color 150ms {A.EASE_OUT};
 }}
 .gb-btn:hover {{ background: {C.BG_OVERLAY}; border-color: {C.BORDER_STRONG}; }}
-.gb-btn:focus-visible {{ outline: 1px solid {C.ACCENT_BLUE}; outline-offset: 1px; }}
+.gb-btn:focus-visible {{ outline: 2px solid {C.ACCENT_BLUE}; outline-offset: 2px; }}
 .gb-btn-primary {{ background: {C.ACCENT_BLUE}; border-color: {C.ACCENT_BLUE}; color: {C.BG_BASE}; font-weight: {T.WEIGHT_SEMIBOLD}; }}
 .gb-btn-primary:hover {{ background: {C.ACCENT_BLUE_DIM}; border-color: {C.ACCENT_BLUE_DIM}; }}
 .gb-speed {{ display: flex; border: 1px solid {C.BORDER_DEFAULT}; border-radius: {S.RADIUS_SM}px; overflow: hidden; }}
@@ -335,6 +335,19 @@ html, body {{
 .gb-progress {{ flex: 1; height: 3px; min-width: 60px; background: {C.BG_OVERLAY}; border-radius: 2px; overflow: hidden; }}
 .gb-progress span {{ display: block; height: 100%; width: 0; background: {C.ACCENT_BLUE}; transition: width 100ms linear; }}
 .gb-time {{ font-family: {T.FONT_MONO}; font-size: {T.SIZE_XS}px; color: {C.TEXT_MUTED}; white-space: nowrap; }}
+.gb-speed-btn:focus-visible {{
+  outline: 2px solid {C.ACCENT_BLUE}; outline-offset: 2px;
+}}
+/* The player lives in its own document, so it repeats the app's reduced-motion
+   rule for its own transitions.  The script checks the same media query before
+   it autoplays, so nothing moves the robot either. */
+@media (prefers-reduced-motion: reduce) {{
+  *, *::before, *::after {{
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }}
+}}
 </style>
 """
 

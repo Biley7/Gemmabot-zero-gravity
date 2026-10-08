@@ -22,7 +22,6 @@ model_family(model_id)     -> str    "gemma-4-26b-a4b-it" -> "Gemma 4"
 """
 from __future__ import annotations
 
-import html as _html
 from typing import Any
 
 from backend.verifier.harness import VERIFICATION_CHECKS
@@ -30,6 +29,7 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.components.blocks import escape as _e
 
 # The three loop states the panel reports.  They are not invented: the app
 # moves through them from real events (an attempt in flight, an attempt that
@@ -56,9 +56,6 @@ _MARK_COLORS: dict[Any, str] = {
 }
 
 
-def _e(value: object) -> str:
-    """HTML-escape any value to a safe string."""
-    return _html.escape(str(value))
 
 
 def attempt_status(record: dict, max_tries: int) -> tuple[str, str]:

@@ -6,10 +6,16 @@ unmeasured metric is never rendered as a zero, and live and scripted runs are
 never charted against each other.
 """
 import copy
+import re
 
 import pytest
 
 from frontend.panels import benchmark
+
+
+def _visible(html: str) -> str:
+    """The text a reader sees, whitespace-normalised."""
+    return " ".join(re.sub(r"<[^>]+>", " ", html).split())
 
 
 def _record(**overrides):
@@ -222,6 +228,67 @@ def test_every_metric_states_what_it_measures():
         assert metric["label"] and metric["unit"]
 
 
+# ---------------------------------------------------------------------------
+# The unit is printed once
+# ---------------------------------------------------------------------------
+
+# The two fields disagree about who owns the unit: a rate is formatted with its
+# "%", a count is not.  Painting both printed it twice — "100% %", "0.20 ms ms".
+DOUBLED_UNITS = ("% %", "ms ms", "s s", "steps steps", "tries tries")
+
+
+def test_a_unit_only_belongs_on_a_number():
+    assert benchmark.split_unit("0.20 ms", "ms") == ("0.20", "ms")
+    assert benchmark.split_unit("100%", "%") == ("100", "%")
+    # A count leaves the unit out of its display; it still needs it added back.
+    assert benchmark.split_unit("4.5", "steps") == ("4.5", "steps")
+    # Placeholders are not measurements.
+    assert benchmark.split_unit("—", "s") == ("—", "")
+    assert benchmark.split_unit("no data", "%") == ("no data", "")
+    # A display that is nothing but its unit cannot be split.
+    assert benchmark.split_unit("ms", "ms") == ("ms", "")
+    assert benchmark.split_unit("1.0", "") == ("1.0", "")
+
+
+def test_a_metric_card_shows_all_five_readouts_with_their_unit_once():
+    html = benchmark.metrics_html(benchmark.rows([
+        _record(mode="synthetic", backend="dry", latency=0.20, success=True),
+        _record(mode="synthetic", backend="dry", latency=0.20, success=False),
+    ]))
+    text = _visible(html)
+
+    for doubled in DOUBLED_UNITS:
+        assert doubled not in text, f"the unit is printed twice: {doubled!r}"
+
+    assert "0.20 s" in text          # latency owns its unit in the display
+    assert "50 %" in text             # the rate reads big number, small unit
+    # A count leaves the unit to metric['unit'], and it is still added back.
+    assert re.search(r"\d+(\.\d+)? steps\b", text), text
+    assert re.search(r"\d+(\.\d+)? tries\b", text), text
+
+
+def test_an_unmeasured_card_carries_no_unit_at_all():
+    """"no data s" would dress a placeholder up as a measurement."""
+    text = _visible(benchmark.metrics_html(benchmark.rows([
+        _record(latency=None, success=None, actions=None, attempts=None),
+    ])))
+    for doubled in DOUBLED_UNITS:
+        assert doubled not in text
+    assert "no data" in text
+    assert not re.search(r"no data\s+(%|s|ms|steps|tries)", text)
+    assert not re.search(r"—\s+(%|s|ms|steps|tries)", text)
+
+
+def test_the_chart_axes_still_get_their_unit_from_the_metric():
+    """The split is for the cards; the axes keep reading metric['unit']."""
+    rows = benchmark.rows([
+        _record(mode="synthetic", backend="dry", latency=2.5),
+    ])
+    assert "axis" in benchmark.chart_technical(rows)
+    assert benchmark._unit_for("latency", 2.5) == "s"
+    assert benchmark._unit_for("latency", 0.002) == "ms"
+
+
 def test_a_negative_or_absurd_value_does_not_become_a_measurement():
     metric = _metric(benchmark.rows([_record(latency="not a number")]), "latency")
     assert metric["value"] is None
@@ -360,8 +427,9 @@ def test_an_unmeasured_metric_is_absent_from_the_technical_chart():
 
 
 def test_both_charts_say_so_when_there_is_nothing_to_chart():
-    assert "no runs to chart" in benchmark.chart_minimal([])
-    assert "no runs to chart" in benchmark.chart_technical(None)
+    # One shared empty state now, so the wording is the same in every panel.
+    assert "No runs to chart." in benchmark.chart_minimal([])
+    assert "No runs to chart." in benchmark.chart_technical(None)
 
 
 # ---------------------------------------------------------------------------
@@ -406,13 +474,13 @@ def test_the_view_separates_live_from_synthetic_and_shows_unclassified_apart():
 def test_the_view_makes_no_claim_when_a_mode_has_no_runs():
     section = _section([_record(mode="synthetic", backend="dry")])
     html = benchmark.section_html(section)
-    assert "no live runs in this source" in html
-    assert "nothing is shown rather than a zero" in html
+    assert "No live runs in this source." in html
+    assert "Nothing is shown rather than a zero." in html
 
 
 def test_an_empty_source_says_it_is_empty():
     html = benchmark.section_html(_section(rows=[]))
-    assert "nothing recorded here yet" in html
+    assert "Nothing recorded here yet." in html
 
 
 def test_the_intro_says_so_when_no_live_run_exists():

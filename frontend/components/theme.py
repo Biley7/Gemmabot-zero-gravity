@@ -475,22 +475,204 @@ hr {{
     color: {C.TELEMETRY_VALUE};
     font-weight: {T.WEIGHT_MEDIUM};
 }}
+
+/* ── Shared blocks (frontend/components/blocks.py) ────────────────────────
+   These were inline styles repeated in every panel.  A block is a class here,
+   so the four labs cannot drift apart, and a hover or a focus state is
+   declared once instead of nowhere. */
+
+/* Panel-inner surface */
+.gb-shell {{
+    background-color: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-radius: {S.px(S.RADIUS_MD)};
+    padding: {S.px(S.MD)};
+}}
+
+/* Small-caps label above a block */
+.gb-sub-title {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    margin-bottom: {S.px(S.SM)};
+}}
+
+/* Empty state — one look for every panel, dense variant for the sidebar */
+.gb-empty {{
+    background-color: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px dashed {C.BORDER_DEFAULT};
+    border-radius: {S.px(S.RADIUS_MD)};
+    padding: {S.px(S.MD)} {S.px(S.LG)};
+}}
+.gb-empty-dense {{
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+    padding: {S.px(S.XS)} 0;
+}}
+.gb-empty-title {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    color: {C.TEXT_SECONDARY};
+}}
+.gb-empty-hint {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    margin-top: {S.px(S.XS)};
+}}
+
+/* Readout cards — label / value / detail, coloured by data-state so that
+   "success" is the same green in every lab. */
+.gb-fact-grid {{
+    display: grid;
+    gap: {S.px(S.SM)};
+}}
+.gb-fact {{
+    display: flex;
+    flex-direction: column;
+    gap: {S.px(S.XS)};
+    padding: {S.px(S.SM)} {S.px(S.MD)};
+    background-color: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-radius: {S.px(S.RADIUS_MD)};
+    transition: {A.transition("border-color", duration=A.DURATION_FAST)};
+}}
+.gb-fact:hover {{
+    border-color: {C.BORDER_DEFAULT};
+}}
+.gb-fact-label {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+}}
+.gb-fact-value {{
+    font-family: {T.FONT_MONO};
+    font-size: var(--gb-fact-value-size, {T.SIZE_BASE}px);
+    color: {C.TEXT_PRIMARY};
+    line-height: {T.LEADING_TIGHT};
+}}
+.gb-fact-detail {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+}}
+.gb-fact[data-state="success"] .gb-fact-value {{ color: {C.SUCCESS}; }}
+.gb-fact[data-state="warning"] .gb-fact-value {{ color: {C.WARNING}; }}
+.gb-fact[data-state="error"]   .gb-fact-value {{ color: {C.ERROR}; }}
+.gb-fact[data-state="running"] .gb-fact-value {{ color: {C.RUNNING}; }}
+.gb-fact[data-state="thinking"] .gb-fact-value {{ color: {C.THINKING}; }}
+.gb-fact[data-state="neutral"] .gb-fact-value {{ color: {C.TELEMETRY_VALUE}; }}
+
+/* A dense table scrolls itself rather than pushing the page sideways */
+.gb-scroll-x {{
+    overflow-x: auto;
+    padding-bottom: {S.px(S.XS)};
+    scrollbar-width: thin;
+}}
+
+/* ── Focus ──────────────────────────────────────────────────────────────
+   Keyboard focus is a visible ring; pointer clicks stay quiet.  Everything
+   below sets a border colour, so without this a keyboard user could not see
+   where they are. */
+:focus-visible {{
+    outline: 2px solid {C.ACCENT_BLUE} !important;
+    outline-offset: 2px !important;
+}}
+[data-baseweb="select"]:focus-within,
+[data-testid="stNumberInput"] input:focus {{
+    border-color: {C.BORDER_STRONG} !important;
+}}
+
+/* ── Selection ─────────────────────────────────────────────────────────── */
+::selection {{
+    background-color: {C.RUNNING_BG};
+    color: {C.TEXT_PRIMARY};
+}}
+
+/* ── Loading ────────────────────────────────────────────────────────────
+   A model call is the one place the console goes quiet: the label is mono,
+   muted and always says what is being waited on. */
+[data-testid="stSpinner"],
+[data-testid="stSpinner"] > div {{
+    font-family: {T.FONT_MONO} !important;
+    font-size: {T.SIZE_SM}px !important;
+    color: {C.TEXT_SECONDARY} !important;
+}}
+
+/* ── Tab hover / active ────────────────────────────────────────────────── */
+[data-testid="stTabs"] [role="tab"]:hover {{
+    color: {C.TEXT_PRIMARY} !important;
+}}
+.gb-action-row:hover {{
+    background-color: {C.BG_OVERLAY};
+}}
+.gb-badge, .gb-status-chip {{
+    transition: {A.transition("background-color", "border-color", "color",
+                             duration=A.DURATION_FAST)} !important;
+}}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────
+   A control system that pulses at someone who asked it not to is a control
+   system that ignores its operator.  The execution player checks the same
+   media query before it autoplays. */
+@media (prefers-reduced-motion: reduce) {{
+    *, *::before, *::after {{
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }}
+}}
+
+/* ── Responsiveness ─────────────────────────────────────────────────────
+   The board and the dense tables are the two things that cannot shrink: they
+   scroll instead of squeezing their cells into an unreadable column. */
+.gb-grid, .gb-hero-grid {{
+    max-width: 100%;
+    overflow-x: auto;
+}}
+
+@media (max-width: 1100px) {{
+    .gb-panel {{ padding: {S.px(S.LG)}; }}
+}}
+
+@media (max-width: 720px) {{
+    .gb-panel, .gb-card, .gb-shell {{ padding: {S.px(S.MD)}; }}
+    h1 {{ font-size: {T.SIZE_LG}px !important; }}
+    [data-testid="stTabs"] [role="tablist"] {{
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        scrollbar-width: thin;
+    }}
+    [data-testid="stTabs"] [role="tab"] {{
+        white-space: nowrap;
+        padding: {S.px(S.XS)} {S.px(S.SM)} !important;
+    }}
+}}
 </style>
 """
-
-
-_injected = False
 
 
 def inject_theme() -> None:
     """Inject the full design-system CSS into the Streamlit page.
 
-    Safe to call multiple times — only injects once per session.
-    Call immediately after st.set_page_config().
+    Called on *every* script run, deliberately.  Streamlit rebuilds the element
+    tree from scratch on each rerun while this module stays in ``sys.modules``,
+    so a "once per process" flag emits the stylesheet exactly once: the second
+    run — any button press, any widget change — drops every ``.gb-*`` class, the
+    ``:focus-visible`` rings, the reduced-motion block and the responsive rules
+    for the rest of that session, and no session after the first one sees them
+    at all.  That is exactly the "inconsistent styling" this module exists to
+    prevent, so the injection must not be guarded.
+
+    Re-emitting is cheap: the string is identical every time, so Streamlit
+    hashes the element and leaves the rendered DOM untouched.
     """
-    global _injected
-    if _injected:
-        return
     import streamlit as st
+
     st.markdown(_css(), unsafe_allow_html=True)
-    _injected = True

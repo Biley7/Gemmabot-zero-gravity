@@ -37,7 +37,6 @@ column_html(kind, body)             frames one lab column as a panel
 """
 from __future__ import annotations
 
-import html as _html
 import io
 from typing import Any
 
@@ -46,6 +45,12 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.components.blocks import (
+    empty_state,
+    escape as _e,
+    fact_cards,
+    plural as _plural,
+)
 from frontend.simulation.ui_helpers import attempt_cards, short_json
 
 # ── The flow the lab animates ────────────────────────────────────────────────
@@ -94,9 +99,6 @@ _STATE_COLORS: dict[str, str] = {
 _DIR_ARROWS: dict[str, str] = {"N": "⬆️", "E": "➡️", "S": "⬇️", "W": "⬅️"}
 
 
-def _e(value: object) -> str:
-    """HTML-escape any value to a safe string."""
-    return _html.escape(str(value))
 
 
 def _cell_text(cell: Any) -> str:
@@ -106,9 +108,6 @@ def _cell_text(cell: Any) -> str:
     return "—"
 
 
-def _plural(count: int, noun: str) -> str:
-    """``1 wall`` / ``7 walls``."""
-    return f"{count} {noun}" if int(count) == 1 else f"{int(count)} {noun}s"
 
 
 def _bytes_label(size: int | None) -> str:
@@ -450,30 +449,7 @@ def checks_html(rows: list[dict]) -> str:
 
 def facts_html(rows: list[dict]) -> str:
     """The readout grid — robot / goal / walls / direction, or image metadata."""
-    cards: list[str] = []
-    for row in rows:
-        color = _STATE_COLORS.get(row.get("state", "neutral"), C.TEXT_PRIMARY)
-        cards.append(
-            f"<div class='gb-vision-fact' data-fact='{_e(row['id'])}' "
-            f"data-state='{_e(row.get('state', 'neutral'))}' "
-            f"style='display:flex;flex-direction:column;gap:{S.px(S.XS)};"
-            f"padding:{S.px(S.SM)} {S.px(S.MD)};background:{C.BG_SURFACE};"
-            f"border:1px solid {C.BORDER_SUBTLE};"
-            f"border-radius:{S.px(S.RADIUS_MD)}'>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-            f"text-transform:uppercase'>{_e(row['label'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_BASE}px;"
-            f"color:{color}'>{_e(row['value'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED}'>{_e(row.get('detail', ''))}</span>"
-            f"</div>"
-        )
-    return (
-        f"<div style='display:grid;"
-        f"grid-template-columns:repeat(auto-fit,minmax({S.px(132)},1fr));"
-        f"gap:{S.px(S.SM)}'>" + "".join(cards) + "</div>"
-    )
+    return fact_cards(rows, css_class="gb-vision-fact", column_min=132)
 
 
 def readings_html(items: list[dict]) -> str:
@@ -483,9 +459,9 @@ def readings_html(items: list[dict]) -> str:
     the parsed JSON under it and the validator's verdict on that reading.
     """
     if not items:
-        return (
-            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>No reading has been attempted yet.</div>"
+        return empty_state(
+            "No reading has been attempted yet.",
+            "Read map asks Gemma Vision to turn the image into a world model.",
         )
 
     blocks: list[str] = []

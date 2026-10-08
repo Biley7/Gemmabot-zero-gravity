@@ -35,13 +35,18 @@ source_html(...)           where this replay came from
 """
 from __future__ import annotations
 
-import html as _html
-
 from backend.vision.map_vision import check_world_report
 from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.components.blocks import (
+    empty_state,
+    escape as _e,
+    fact_cards,
+    plural as _plural,
+    scroll_x,
+)
 from frontend.panels.engine import backend_label
 from frontend.simulation import player as playback
 
@@ -61,14 +66,8 @@ _STATE_COLORS: dict[str, str] = {
 _REPLAY_CHECKS: tuple[str, ...] = ("valid", "in_bounds")
 
 
-def _e(value: object) -> str:
-    """HTML-escape any value to a safe string."""
-    return _html.escape(str(value))
 
 
-def _plural(count: int, noun: str) -> str:
-    """``1 action`` / ``6 actions``."""
-    return f"{count} {noun}" if int(count) == 1 else f"{int(count)} {noun}s"
 
 
 def _is_action_list(value: object) -> bool:
@@ -315,9 +314,9 @@ def facts_rows(run_model: dict) -> list[dict]:
 def runs_html(run_models: list[dict]) -> str:
     """The log table: one row per run, newest first."""
     if not run_models:
-        return (
-            f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>No runs have been logged yet.</div>"
+        return empty_state(
+            "No runs have been logged yet.",
+            "Run a plan in Text command, or the benchmark runner, and it lands here.",
         )
 
     header = (
@@ -363,7 +362,7 @@ def runs_html(run_models: list[dict]) -> str:
             f"color:{replay_color}'>{_e(replay_text)}</span>"
             f"</div>"
         )
-    return header + "".join(rows)
+    return scroll_x(header + "".join(rows), min_width=760)
 
 
 def _segment(label, detail, state, mark, *, kind, attrs=""):  # noqa: ANN001
@@ -481,30 +480,7 @@ def meta_html(run_model: dict, plan: dict | None) -> str:
 
 def facts_html(rows: list[dict]) -> str:
     """The four readouts: run, backend, latency, attempts."""
-    cards: list[str] = []
-    for row in rows:
-        color = _STATE_COLORS.get(row.get("state", "neutral"), C.TEXT_PRIMARY)
-        cards.append(
-            f"<div class='gb-replay-fact' data-fact='{_e(row['id'])}' "
-            f"data-state='{_e(row.get('state', 'neutral'))}' "
-            f"style='display:flex;flex-direction:column;gap:{S.px(S.XS)};"
-            f"padding:{S.px(S.SM)} {S.px(S.MD)};background:{C.BG_SURFACE};"
-            f"border:1px solid {C.BORDER_SUBTLE};"
-            f"border-radius:{S.px(S.RADIUS_MD)}'>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-            f"text-transform:uppercase'>{_e(row['label'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_BASE}px;"
-            f"color:{color}'>{_e(row['value'])}</span>"
-            f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.TEXT_MUTED}'>{_e(row.get('detail', ''))}</span>"
-            f"</div>"
-        )
-    return (
-        f"<div style='display:grid;"
-        f"grid-template-columns:repeat(auto-fit,minmax({S.px(160)},1fr));"
-        f"gap:{S.px(S.SM)}'>" + "".join(cards) + "</div>"
-    )
+    return fact_cards(rows, css_class="gb-replay-fact", column_min=160)
 
 
 def source_html(path: str, run_model: dict) -> str:
