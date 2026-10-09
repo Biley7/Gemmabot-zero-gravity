@@ -8,9 +8,20 @@
 *.pyc
 __pycache__/
 .pytest_cache/
+.vscode/
+.freebuff/
 
-# Secrets — NEVER bake these into an image
+# Secrets — NEVER bake these into an image.  `.env*` covers .env.local,
+# .env.production, ... ; the `**/` forms cover the same names at any depth.
 .env
+.env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/credentials.json
+**/service-account*.json
 .streamlit/secrets.toml
 
 # Dev / test artefacts

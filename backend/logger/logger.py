@@ -58,6 +58,15 @@ def _redact(text: str) -> str:
     return text
 
 
+def redact_secrets(text: str) -> str:
+    """Public: scrub the configured API key from *text* before it is shown.
+
+    The logger redacts everything it writes; this is the same scrub for text
+    that never touches disk (e.g. an exception message echoed into the UI).
+    """
+    return _redact(str(text))
+
+
 def _redact_record(record: dict) -> dict:
     """Return a copy of *record* with API key values scrubbed from strings."""
     r = copy.deepcopy(record)

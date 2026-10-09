@@ -8,6 +8,7 @@ Consumers: theme.py, components.py, ui_helpers.py
 
 # ── Surfaces ────────────────────────────────────────────────────────────────
 BG_BASE        = "#0e0f11"   # page background — deep graphite
+BG_INSET       = "#0a0b0d"   # drawing well — the simulator viewport floor
 BG_SURFACE     = "#14161a"   # card / panel surface
 BG_ELEVATED    = "#1b1d23"   # raised panel, modal
 BG_OVERLAY     = "#21242c"   # hover overlay, input background

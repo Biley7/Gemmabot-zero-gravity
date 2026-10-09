@@ -47,9 +47,21 @@ def _button(at: AppTest, label: str):
 
 
 def test_app_starts_without_exceptions():
+    """The console boots: product header, status bar and the five nav tabs."""
+    from frontend.console import shell as console_shell
+
     at = _run_app()
     assert not at.exception, [element.value for element in at.exception]
-    assert at.title[0].value == "🤖 GemmaBot"
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "gb-wordmark'>GemmaBot<" in rendered
+    assert console_shell.TAGLINE in rendered
+    # The status bar is there and the console is idle: nothing has run.
+    assert "gb-console-bar" in rendered
+    assert "data-status='ready'" in rendered
+    assert "READY" in rendered
+    # One vocabulary, five zones — the same names the shell declares.
+    assert [tab.label for tab in at.tabs] == list(console_shell.NAV)
 
 
 def test_sidebar_controls_exist():
@@ -173,8 +185,10 @@ def test_run_plan_shows_the_gemma_brain_metadata(monkeypatch):
     assert [entry["ok"] for entry in meta["checks"]] == [True] * 4
     assert meta["verified"] is True
 
-    panels = [element.value for element in at.markdown if "Gemma Brain" in element.value]
-    assert len(panels) == 1, "expected exactly one Brain panel"
+    panels = [
+        element.value for element in at.markdown if "GemmaBot Guard" in element.value
+    ]
+    assert len(panels) == 1, "expected exactly one Guard console"
     panel = panels[0]
     assert panel.count("data-ok='true'") == 4
     # The panel is structured metadata: the model's reasoning is not in it.
@@ -262,7 +276,9 @@ def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
     assert meta["plan"]["label"] == "—"
     assert [entry["ok"] for entry in meta["checks"]] == [None] * 4
     assert meta["verified"] is False
-    panel = next(element.value for element in at.markdown if "Gemma Brain" in element.value)
+    panel = next(
+        element.value for element in at.markdown if "GemmaBot Guard" in element.value
+    )
     assert panel.count("data-ok='none'") == 4
     assert "data-ok='true'" not in panel
 
@@ -704,3 +720,162 @@ def test_switching_the_map_drops_results_measured_on_the_previous_one():
 
     rendered = "\n".join(element.value for element in at.markdown)
     assert "No run in this session yet." in rendered      # the sidebar empty state
+
+
+def test_switching_the_map_drops_a_rendered_log_replay():
+    """A replay shown from the run log belongs to the session, not the map."""
+    at = _run_app()
+    # A rendered replay, as if the Replay tab had just produced one.  The map
+    # switch is processed in the sidebar before the tabs render, so this is
+    # cleared rather than drawn against the new world's page.
+    at.session_state["log_replay"] = {"sentinel": True}
+    at.session_state["log_replay_autoplay"] = True
+
+    at.sidebar.selectbox[0].select("sample").run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["log_replay"] is None
+    assert at.session_state["log_replay_autoplay"] in (None, False)
+
+
+# ---------------------------------------------------------------------------
+# Honest failures, the execution gate and a full reset
+# ---------------------------------------------------------------------------
+
+def test_a_failed_run_leaves_no_successful_telemetry(monkeypatch):
+    """A run with no accepted plan reports failure — never a success look-alike."""
+    import engine
+
+    hazard = [{"cmd": "forward", "steps": 7}]
+    feedback = "action 1 failed: blocked at [2, 0]"
+
+    def failing_run_plan(instruction, world, backend="api", max_tries=3,
+                         ask=None, on_attempt=None):
+        history = [{
+            "attempt": 1, "prompt": instruction,
+            "reply": json.dumps({"thought": "t", "actions": hazard}),
+            "actions": hazard, "ok": False, "feedback": feedback,
+        }]
+        if on_attempt is not None:
+            on_attempt(history[0])
+        return {
+            "actions": None, "attempts": 1, "history": history,
+            "latency": 0.5, "backend": "api", "error": feedback,
+            "verification": engine.verify_run(world, None, history),
+        }
+
+    monkeypatch.setattr(engine, "run_plan", failing_run_plan)
+    at = _run_app()
+    world_before = json.loads(json.dumps(at.session_state["world"]))
+
+    _button(at, "Run plan").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["text_result"]["actions"] is None
+    assert at.session_state["replay"] is None
+    assert at.session_state["last_run"]["status"] == "No valid plan"
+    assert at.session_state["world"] == world_before
+    errors = "\n".join(element.value for element in at.error)
+    assert "Planning failed after 1 attempt(s)" in errors
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "Goal reached" not in rendered
+
+
+def test_execution_is_refused_when_the_result_is_not_verified(monkeypatch):
+    """The UI gate: a plan that never passed verification cannot execute."""
+    import engine
+
+    def tampered_run_plan(instruction, world, backend="api", max_tries=3,
+                          ask=None, on_attempt=None):
+        history = [{
+            "attempt": 1, "prompt": instruction,
+            "reply": json.dumps({"thought": "t", "actions": DEFAULT_WORLD_PLAN}),
+            "actions": DEFAULT_WORLD_PLAN, "ok": True, "feedback": "ok",
+        }]
+        if on_attempt is not None:
+            on_attempt(history[0])
+        return {
+            "actions": DEFAULT_WORLD_PLAN, "attempts": 1, "history": history,
+            "latency": 0.1, "backend": "api", "error": None,
+            "verification": None,          # tampered / missing
+        }
+
+    monkeypatch.setattr(engine, "run_plan", tampered_run_plan)
+    at = _run_app()
+    world_before = json.loads(json.dumps(at.session_state["world"]))
+
+    _button(at, "Run plan").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["replay"] is None
+    assert at.session_state["world"] == world_before
+    assert at.session_state["logs"] == []
+    errors = "\n".join(element.value for element in at.error)
+    assert "did not pass verification" in errors
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "Goal reached" not in rendered
+
+
+def test_a_dry_safety_run_is_logged_with_synthetic_provenance(monkeypatch):
+    """A scripted lab run must never be recorded as a live model run.
+
+    Regression: the Safety Lab logged ``backend_mode(backend)`` from the
+    sidebar engine, so a dry run was written to the run log as ``live`` when
+    the sidebar was on API/Local — exactly the provenance mix-up the benchmark
+    separates live from synthetic to prevent.
+    """
+    from gemmabot import logger as run_logger
+    from gemmabot.simulator import new_world
+
+    captured: list[tuple] = []
+    monkeypatch.setattr(
+        run_logger, "log_run",
+        lambda *args, **kwargs: captured.append((args, kwargs)) or {},
+    )
+
+    at = _run_app()
+    assert at.sidebar.radio[0].value == "API"       # sidebar engine is live-capable
+    _button(at, "Run safety check").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["safety_result"] is not None
+    assert len(captured) == 1
+    args, kwargs = captured[0]
+    assert args[1] == "dry"                          # the planner that really ran
+    assert kwargs["mode"] == "synthetic"             # and its real provenance
+    assert kwargs["world"] == new_world()            # a dry run uses the default world
+
+
+def test_reset_world_clears_every_run_result(monkeypatch):
+    import engine
+
+    def verified_run_plan(instruction, world, backend="api", max_tries=3,
+                          ask=None, on_attempt=None):
+        history = [{
+            "attempt": 1, "prompt": instruction,
+            "reply": json.dumps({"thought": "t", "actions": DEFAULT_WORLD_PLAN}),
+            "actions": DEFAULT_WORLD_PLAN, "ok": True, "feedback": "ok",
+        }]
+        if on_attempt is not None:
+            on_attempt(history[0])
+        return {
+            "actions": DEFAULT_WORLD_PLAN, "attempts": 1, "history": history,
+            "latency": 1.25, "backend": "api", "error": None,
+            "verification": engine.verify_run(world, DEFAULT_WORLD_PLAN, history),
+        }
+
+    monkeypatch.setattr(engine, "run_plan", verified_run_plan)
+    at = _run_app()
+    _button(at, "Run plan").click().run()
+    assert at.session_state["replay"] is not None
+    assert at.session_state["world"]["robot"] == [6, 5]
+
+    _button(at, "Reset world").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["world"]["robot"] == [0, 0]
+    assert at.session_state["text_result"] is None
+    assert at.session_state["replay"] is None
+    assert at.session_state["last_run"] is None
+    assert at.session_state["logs"] == []
+    assert at.session_state["vision_loaded"] is False

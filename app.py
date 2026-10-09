@@ -1,4 +1,4 @@
-"""GemmaBot — Streamlit frontend.
+"""GemmaBot — Streamlit frontend: the AI robotics validation console.
 
 Propose (Gemma) → Verify (code) → Execute (simulator).
 
@@ -7,14 +7,22 @@ action shown comes from a real backend result — ``harness.plan_with_repair``
 history, ``map_vision.read_map`` history, ``simulator.render``/``step``,
 ``logger`` summaries and the benchmark files.
 
+The console shell (``frontend.console``) supplies the product header, the
+status vocabulary and the six-stage pipeline.  The Mission screen is laid out
+the way the product works: the command on the left, the simulator viewport in
+the centre, the GemmaBot Guard console on the right, and the pipeline plus the
+execution timeline underneath — AI proposes, the guard verifies, the robot
+executes.
+
 The Execute stage is animated by ``frontend.simulation.player`` (the
 simulator's own timeline) and drawn by ``player_view`` — the player only
 replays those steps, it never re-simulates or re-times them.
 
-The Gemma Brain panel (``frontend.panels.brain``) reports the run's structured
-metadata — model, backend, loop status, attempts, latency, plan size and the
-four checks ``harness.verify_plan`` evaluated.  It never shows model
-reasoning: it is metadata, not a transcript.
+The GemmaBot Guard console (``frontend.panels.brain``) reports the run's
+structured metadata — model, backend, attempt, plan, the verification /
+simulation / execution verdicts, latency and the four checks
+``harness.verify_plan`` evaluated.  It never shows model reasoning: it is
+metadata, not a transcript.
 
 The Vision Lab (``frontend.panels.vision``) reads an image into a world model,
 shows the reading next to the world it proposes, validates that world
@@ -48,7 +56,9 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
-from frontend.components.blocks import empty_state
+from frontend.components.blocks import empty_state, fact_cards
+from frontend.console import pipeline as console
+from frontend.console import shell as console_shell
 from frontend.panels import benchmark as benchmark_panel
 from frontend.panels import brain
 from frontend.panels import replay as replay_panel
@@ -164,25 +174,34 @@ _init_state()
 # Callbacks
 # ---------------------------------------------------------------------------
 
-def _clear_results() -> None:
-    """Drop every result measured on a world that is no longer the active one.
+def _clear_run_state() -> None:
+    """Drop every result a session run produced for the active world.
 
     A console that keeps showing the last run's verdict after the map changed is
     worse than one showing nothing: the numbers still look live.  Called by
-    anything that moves the simulator to another world.
+    anything that moves the simulator to another world or resets it.
+
+    The Vision Lab's reading is deliberately kept: it describes the uploaded
+    image, not the active map.  ``vision_loaded`` is derived from the map name
+    instead of remembered, so it can never claim the wrong world.
     """
     st.session_state.logs = []
     st.session_state.text_result = None
     st.session_state.replay = None
+    st.session_state.replay_autoplay = False
     st.session_state.last_run = None
     st.session_state.safety_result = None
     st.session_state.safety_autoplay = False
+    # A replay rendered from the run log is still a session result; the record
+    # stays on disk and the Replay tab rebuilds it on demand.
+    st.session_state.log_replay = None
+    st.session_state.log_replay_autoplay = False
 
 
 def _adopt_world(name: str) -> None:
     """Point the simulator at map *name* and clear what belonged to the old one."""
     st.session_state.world = copy.deepcopy(st.session_state.map_source[name])
-    _clear_results()
+    _clear_run_state()
     # Derived, not remembered: the simulator is on the scanned map exactly when
     # the scanned map is the active one.
     st.session_state.vision_loaded = name == "scanned"
@@ -220,16 +239,39 @@ def _load_vision_into_simulator() -> None:
     st.session_state.world = copy.deepcopy(scanned)
     st.session_state.vision_loaded = True
     # Whatever was measured on the old map is not about this one.
-    _clear_results()
+    _clear_run_state()
 
 
 def _render_replay(replay: dict) -> None:
-    """The Phase 3 execution player: play / pause / reset, 0.5× – 4× speed."""
+    """The execution player *is* the Mission viewport: the simulator's own run.
+
+    Compact (no built-in step list): the console draws the action timeline
+    beside it, so the viewport keeps the stage, the live step readout
+    (``02/06 · forward ×7``), the transport and the speed selector.
+    """
     autoplay = bool(st.session_state.pop("replay_autoplay", False))
     st.components.v1.html(
-        player_view.player_html(replay, autoplay=autoplay),
-        height=player_view.player_height(),
+        player_view.player_html(
+            replay,
+            autoplay=autoplay,
+            cell_px=S.CELL_SIZE,
+            show_steps=False,
+        ),
+        height=player_view.player_height(S.CELL_SIZE),
         scrolling=False,
+    )
+
+
+def _draw_viewport(world: dict) -> None:
+    """The simulator viewport: the framed 8×8 board with its legend."""
+    st.markdown(
+        console_shell.viewport_html(
+            ui_helpers.world_grid_html(world),
+            title="Simulator",
+            meta=_viewport_meta(world, None),
+            foot=ui_helpers.grid_legend_html(),
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -266,30 +308,157 @@ def _render_log_replay(timeline: dict) -> None:
 # Rendering helpers (design-system backed)
 # ---------------------------------------------------------------------------
 
-def _draw_board(placeholder, world: dict, path: list | None = None, current_step: list | None = None) -> None:
-    """Render the hero grid from the world dict (source of truth)."""
-    placeholder.markdown(
-        ui_helpers.world_grid_html(
-            world,
-            path=path or [],
-            current_step=current_step if current_step is not None else -1,
-        ),
+# ---------------------------------------------------------------------------
+# Console shell helpers
+# ---------------------------------------------------------------------------
+
+def _paint_status(slot, key: str, activity: str = "", meta: str = "") -> None:
+    """Draw the console status bar into its slot."""
+    slot.markdown(
+        console_shell.status_bar_html(key=key, activity=activity, meta=meta),
         unsafe_allow_html=True,
     )
 
 
-def _render_telemetry(summary: dict) -> None:
-    """Four native st.metric widgets, styled by the design-system CSS."""
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Attempts", summary.get("attempts_label", "—"))
-    col2.metric("Latency",  summary.get("latency_label",  "—"))
-    col3.metric("Backend",  summary.get("backend",        "—"))
-    col4.metric("Status",   summary.get("status",         "—"))
+def _resting_status() -> tuple[str, str]:
+    """The console's status when nothing is running.
+
+    Derived from the last run in this session and from nothing else: the
+    verifier's verdict for the plan, and whether an approved plan really
+    executed.  A session with no run at all is READY.
+    """
+    text = st.session_state.get("text_result")
+    if text:
+        ok = (text.get("verification") or {}).get("ok")
+        verified = ok if ok is True or ok is False else None
+        return console_shell.console_status(
+            verified=verified,
+            executed=bool(text.get("replay")) if text.get("actions") is not None else None,
+        )
+    safety = st.session_state.get("safety_result")
+    if safety:
+        success = (safety.get("summary") or {}).get("success") or {}
+        verified = bool(success.get("ok"))
+        key, _ = console_shell.console_status(verified=verified)
+        return key, (
+            "The Safety Lab's last plan passed verification." if verified
+            else "No plan passed verification in the Safety Lab."
+        )
+    vision = st.session_state.get("vision_result")
+    if vision:
+        world = vision.get("world")
+        key, _ = console_shell.console_status(verified=bool(world))
+        return key, (
+            "The last reading passed the world checks." if world
+            else "No reading passed the world checks."
+        )
+    return console_shell.console_status()
 
 
-def _paint_brain(slot, meta: dict) -> None:
-    """Draw the Gemma Brain panel into its slot."""
+def _world_facts(world: dict) -> str:
+    """The active world's real geometry, as console readouts."""
+    robot = world.get("robot") or [0, 0]
+    goal = world.get("goal") or [0, 0]
+    walls = world.get("walls") or []
+    rows = [
+        {"id": "map", "label": "Map", "value": _map_label(st.session_state.map_name),
+         "detail": "selected in the sidebar", "state": "neutral"},
+        {"id": "robot", "label": "Robot", "value": f"[{robot[0]}, {robot[1]}]",
+         "detail": f"facing {world.get('dir', '?')}", "state": "neutral"},
+        {"id": "goal", "label": "Goal", "value": f"[{goal[0]}, {goal[1]}]",
+         "detail": "the cell a plan must end on", "state": "neutral"},
+        {"id": "obstacles", "label": "Obstacles", "value": str(len(walls)),
+         "detail": "blocked cells the verifier refuses", "state": "neutral"},
+    ]
+    return fact_cards(rows, css_class="gb-mission-fact", column_min=104)
+
+
+def _paint_guard(slot, meta: dict) -> None:
+    """Draw the GemmaBot Guard console into its slot."""
     slot.markdown(brain.brain_panel_html(meta), unsafe_allow_html=True)
+
+
+def _guard_meta(*, backend: str, model: str | None, max_tries: int) -> dict:
+    """The guard console for a session that has not run anything yet.
+
+    The model and the backend are the configured values; every verdict is
+    unproven, which is exactly what the session has to show.
+    """
+    return brain.brain_metadata(
+        backend=engine.backend_label(backend),
+        model=model,
+        status="ready",
+        attempts=0,
+        max_tries=max_tries,
+    )
+
+
+def _viewport_meta(world: dict | None, replay: dict | None) -> str:
+    """The viewport bar's mono readout: what the drawing is showing."""
+    if replay is not None:
+        return (
+            f"playback · {len(replay.get('steps') or [])} steps · "
+            f"{int(replay.get('cells') or 0)} cells"
+        )
+    if not world:
+        return ""
+    return (
+        f"{len(world.get('walls') or [])} obstacles · "
+        f"robot [{world.get('robot', [0, 0])[0]}, {world.get('robot', [0, 0])[1]}]"
+    )
+
+
+def _run_zones(stored: dict) -> None:
+    """The pipeline, the execution timeline and the verification status.
+
+    Every state here is read off the stored run: the plan the loop produced,
+    ``verify_plan``'s checks, whether the execution gate sealed the plan and the
+    simulator timeline that executed it.  Nothing is inferred from a timer.
+    """
+    stages = console.pipeline_stages(
+        instruction=stored.get("instruction", ""),
+        actions=stored.get("actions"),
+        verification=stored.get("verification"),
+        approved=stored.get("approved") is not None,
+        timeline=stored.get("replay"),
+        error=stored.get("error"),
+    )
+    st.markdown(
+        console_shell.zone_bar_html(
+            "Pipeline", "input → plan → verify → simulate → approve → execute"
+        )
+        + console.pipeline_html(stages),
+        unsafe_allow_html=True,
+    )
+
+    timeline = stored.get("replay")
+    rows = console.timeline_rows(stored.get("actions"), timeline=timeline)
+    steps = len(timeline.get("steps") or []) if timeline else 0
+    cells = int(timeline.get("cells") or 0) if timeline else 0
+
+    exec_col, status_col = st.columns([2.1, 1.0], gap="medium")
+    with exec_col:
+        st.markdown(
+            console_shell.zone_bar_html(
+                "Execution timeline",
+                f"{len(rows)} action(s) · {steps} step(s) · {cells} cell(s)"
+                + (
+                    f" · halted: {timeline.get('halted')}"
+                    if timeline and timeline.get("halted") else ""
+                ),
+            )
+            + console.timeline_html(rows),
+            unsafe_allow_html=True,
+        )
+    with status_col:
+        st.markdown(
+            console_shell.zone_bar_html("Status"),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            console.status_strip_html(console.status_checks(stored.get("verification"))),
+            unsafe_allow_html=True,
+        )
 
 
 def _run_brain_meta(
@@ -303,8 +472,11 @@ def _run_brain_meta(
     steps: int | None,
     reached: bool | None,
     error: str | None,
+    approved: bool | None = None,
+    executed: bool | None = None,
+    halted: str | None = None,
 ) -> dict:
-    """Post-run Brain metadata: the verified plan plus its real four checks."""
+    """Post-run Guard metadata: the verified plan plus its real four checks."""
     return brain.run_metadata(
         backend_label=engine.backend_label(backend),
         model=engine.backend_model(backend),
@@ -315,23 +487,11 @@ def _run_brain_meta(
         latency=latency,
         steps=steps,
         reached=reached,
+        approved=approved,
+        executed=executed,
+        halted=halted,
         error=error,
     )
-
-
-def _run_status_chip(summary: dict) -> None:
-    """Animated StatusChip showing the outcome of the last run."""
-    status = summary.get("status", "")
-    state: DS.State
-    if "safe" in status.lower() or "valid" in status.lower():
-        state = "success"
-    elif "failed" in status.lower() or "rejected" in status.lower():
-        state = "error"
-    elif "plan" in status.lower() and "no" in status.lower():
-        state = "warning"
-    else:
-        state = "neutral"
-    st.markdown(DS.status_chip(status, state), unsafe_allow_html=True)
 
 
 def _render_attempt_cards(
@@ -354,7 +514,7 @@ def _render_attempt_cards(
 # ---------------------------------------------------------------------------
 
 st.sidebar.markdown(
-    DS.section_title("Control Panel"), unsafe_allow_html=True
+    DS.section_title("Configuration"), unsafe_allow_html=True
 )
 
 engine_choice = st.sidebar.radio(
@@ -477,75 +637,110 @@ with st.sidebar.expander("Keyboard"):
 # Main layout
 # ---------------------------------------------------------------------------
 
-st.title("🤖 GemmaBot")
+# ── Console shell: product header and live status ─────────────────────────
+# The header is the product; the bar under it is the console's own state
+# (READY / THINKING / VERIFYING / EXECUTING / COMPLETE / FAILED).  While a run is
+# in flight the loop repaints this slot with the phase it is really in.
 st.markdown(
-    DS.badge("Propose", "running") + "&nbsp;" +
-    DS.badge("Verify", "neutral") + "&nbsp;" +
-    DS.badge("Execute", "neutral"),
+    console_shell.header_html(
+        backend_label=engine.backend_label(backend),
+        model=engine.backend_model(backend),
+    ),
     unsafe_allow_html=True,
 )
+status_slot = st.empty()
+_status_key, _status_text = _resting_status()
+_paint_status(status_slot, _status_key, _status_text)
 
-tab_names = ["Text command", "Safety Lab"]
-if HAVE_MAPVISION:
-    tab_names.append("Vision Lab")
-if HAVE_LOGGER:
-    tab_names.append("Replay")
-if HAVE_BENCHMARK:
-    tab_names.append("Benchmark")
+# ── Primary navigation ────────────────────────────────────────────────────
+_available = {
+    "Mission": True,
+    "Safety Lab": True,
+    "Vision Lab": HAVE_MAPVISION,
+    "Run History": HAVE_LOGGER,
+    "Benchmark": HAVE_BENCHMARK,
+}
+tab_names = [name for name in console_shell.NAV if _available[name]]
 tabs = dict(zip(tab_names, st.tabs(tab_names)))
 
 
-# ── Text command ──────────────────────────────────────────────────────────
-with tabs["Text command"]:
-    st.markdown(
-        DS.section_title(
-            f"Text command · {_map_label(st.session_state.map_name)}", icon="⬛"
-        ),
-        unsafe_allow_html=True,
-    )
+# ── Mission ───────────────────────────────────────────────────────────────
+with tabs["Mission"]:
+    command_col, viewport_col, guard_col = st.columns([1.05, 2.0, 1.3], gap="medium")
 
-    # Legend above the grid
-    st.markdown(ui_helpers.grid_legend_html(), unsafe_allow_html=True)
+    # The guard console is created before the command column so the planning
+    # loop can stream its real states (Thinking → Repairing → Executing) into it
+    # while the run is still in flight: Streamlit paints an element where it was
+    # created, not where it was last written.
+    with guard_col:
+        guard_slot = st.empty()
+        stored_brain = (st.session_state.text_result or {}).get("brain")
+        _paint_guard(
+            guard_slot,
+            stored_brain
+            or _guard_meta(
+                backend=backend,
+                model=engine.backend_model(backend),
+                max_tries=max_tries,
+            ),
+        )
 
-    # The board slot is either the live world, or the Phase 3 execution player
-    # replaying the last run (the player owns play / pause / reset and speed).
-    board = st.empty()
-    replay = st.session_state.get("replay") if st.session_state.get("text_result") else None
-    if replay:
-        with board:
-            _render_replay(replay)
-    else:
-        _draw_board(board, st.session_state.world)
+    # The viewport is the hero: the world, or the execution playback of the last
+    # run (the player owns play / pause / reset and the speed selector).
+    with viewport_col:
+        playing = (
+            st.session_state.get("replay")
+            if st.session_state.get("text_result") else None
+        )
+        if playing:
+            _render_replay(playing)
+        else:
+            _draw_viewport(st.session_state.world)
 
-    instruction = st.text_input(
-        "Instruction", "Move to the goal using the safest route."
-    )
+    # ── Mission command ───────────────────────────────────────────────────
+    with command_col:
+        st.markdown(
+            console_shell.zone_bar_html(
+                "Mission command", _map_label(st.session_state.map_name)
+            ),
+            unsafe_allow_html=True,
+        )
+        instruction = st.text_input(
+            "Instruction",
+            "Move to the goal using the safest route.",
+            help="What the robot should do. The model proposes a plan for it; the "
+                 "guard decides whether that plan may run.",
+        )
+        run_clicked = st.button(
+            "Run plan",
+            type="primary",
+            disabled=not instruction.strip(),
+            shortcut=SHORTCUTS["plan"],
+            help="Propose with the model, verify with the harness, repair what "
+                 "fails and execute the accepted plan. "
+                 f"Shortcut: {SHORTCUTS['plan']}.",
+        )
+        st.markdown(
+            console_shell.zone_bar_html("Active world"), unsafe_allow_html=True
+        )
+        st.markdown(_world_facts(st.session_state.world), unsafe_allow_html=True)
 
-    # ── Gemma Brain ───────────────────────────────────────────────────────
-    # The slot is created before the Run button so the planning loop can stream
-    # Thinking → Repairing → Executing into it while the run is still going.
-    # It shows structured metadata only — never the model's reasoning.
-    brain_slot = st.empty()
-    stored_brain = (st.session_state.text_result or {}).get("brain")
-    if stored_brain:
-        _paint_brain(brain_slot, stored_brain)
-
-    if st.button(
-        "Run plan",
-        type="primary",
-        shortcut=SHORTCUTS["plan"],
-        help="Propose with the model, verify with the harness, repair what fails "
-             f"and execute the accepted plan. Shortcut: {SHORTCUTS['plan']}.",
-    ):
+    if run_clicked:
         if not instruction.strip():
             st.warning("Enter an instruction first.")
         else:
             live = {"attempt": 0}
 
             def _live_status(status_key: str, status_detail: str) -> None:
-                """Stream one real loop state into the panel."""
-                _paint_brain(
-                    brain_slot,
+                """Stream the loop's real state into the console and the header.
+
+                ``status_key`` is the loop's own state — ``thinking`` /
+                ``repairing`` / ``executing`` — taken from the harness's attempt
+                records.  The header speaks the console's vocabulary, which is
+                derived from that same key, so the two can never disagree.
+                """
+                _paint_guard(
+                    guard_slot,
                     brain.brain_metadata(
                         backend=engine.backend_label(backend),
                         model=engine.backend_model(backend),
@@ -554,6 +749,15 @@ with tabs["Text command"]:
                         max_tries=max_tries,
                         detail=status_detail,
                     ),
+                )
+                key, _ = console_shell.console_status(
+                    phase=console_shell.phase_for(status_key)
+                )
+                _paint_status(
+                    status_slot,
+                    key,
+                    status_detail,
+                    meta=f"attempt {live['attempt']}/{max_tries}",
                 )
 
             def _on_attempt(record: dict) -> None:
@@ -583,13 +787,27 @@ with tabs["Text command"]:
             )
             replay = None
 
-            if result["actions"] is not None:
-                # Phase 3: execute on a deep copy and keep the simulator's own
-                # timeline.  Every cell, turn and message the player replays is
-                # a real ``simulator.step`` result — nothing is staged here.
-                replay = playback.build_timeline(
-                    st.session_state.world, result["actions"]
+            # The execution gate requires an approved plan.  ``run_plan``
+            # returns the guard's sealed ``ApprovedPlan``; if a result arrives
+            # without one, approving it re-verifies from scratch and only a
+            # genuinely valid plan can succeed.  ``execute_approved`` verifies
+            # again before the simulator steps, so nothing in the UI can bypass
+            # validation.
+            approved = result.get("approved")
+            executable = engine.verified_actions(result)
+            if approved is None and executable is not None:
+                approved = engine.approve(
+                    st.session_state.world,
+                    executable,
+                    instruction=instruction,
+                    planner=result["backend"],
                 )
+            if approved is not None:
+                # Phase 3: execute on the approved snapshot and keep the
+                # simulator's own timeline.  Every cell, turn and message the
+                # player replays is a real ``simulator.step`` result — nothing
+                # is staged here.
+                replay = playback.build_approved_timeline(approved)
                 st.session_state.world = replay["final_world"]
                 st.session_state.logs.extend(playback.log_lines(replay))
                 del st.session_state.logs[:-LOG_LINE_CAP]
@@ -609,6 +827,9 @@ with tabs["Text command"]:
                 latency=result["latency"],
                 steps=len(replay["steps"]) if replay else None,
                 reached=replay["reached"] if replay else None,
+                approved=approved is not None,
+                executed=replay is not None,
+                halted=replay.get("halted") if replay else None,
                 error=result["error"],
             )
             _live_status(
@@ -621,6 +842,7 @@ with tabs["Text command"]:
                 "max_tries": max_tries,
                 "metrics": metrics,
                 "replay": replay,
+                "approved": approved,
                 "brain": brain_meta,
             }
             st.session_state.last_run = {
@@ -655,39 +877,30 @@ with tabs["Text command"]:
             # we just recorded instead of waiting for the next interaction.
             st.rerun()
 
-    # Persisted result — survives reruns
+    # ── Pipeline, execution timeline and verification status ──────────────
+    # Persisted, so the zones survive every rerun.  Every state in them is read
+    # off the stored run: nothing is inferred from a timer.
     stored = st.session_state.text_result
     if stored:
-        st.markdown(DS.divider(), unsafe_allow_html=True)
+        _run_zones(stored)
 
-        # Instruction echo
-        st.markdown(
-            DS.card(
-                f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-                f"color:{C.TEXT_SECONDARY}'>{stored['instruction']}</span>",
-                title="Instruction",
-            ),
-            unsafe_allow_html=True,
-        )
-
-        # Telemetry lives in the Gemma Brain panel above — Attempts, Latency,
-        # Backend and Status are read from the same run there.
-
-        # Outcome status — from the simulator timeline the player replays
+        # Outcome — from the simulator timeline the player replays.  A result may
+        # be shown as successful only when an approved plan really executed and
+        # produced a timeline; anything else takes the failure path.
         replay = stored.get("replay")
-        if stored["actions"] is None:
+        if replay is None:
             st.error(
                 f"Planning failed after {stored['attempts']} attempt(s): "
-                f"{stored['error']}"
+                f"{stored.get('error') or 'the plan did not pass verification'}"
             )
         else:
             n = len(stored["actions"])
-            if replay and replay["reached"]:
+            if replay["reached"]:
                 st.markdown(
-                    DS.status_chip("🎯  Goal reached", "success"),
+                    DS.status_chip("Goal reached", "success"),
                     unsafe_allow_html=True,
                 )
-            elif replay and not replay["ok"]:
+            elif not replay["ok"]:
                 st.markdown(
                     DS.status_chip("Execution blocked", "error"),
                     unsafe_allow_html=True,
@@ -698,13 +911,13 @@ with tabs["Text command"]:
                     unsafe_allow_html=True,
                 )
 
-        # Attempt cards (propose → verify loop)
-        st.markdown(DS.section_title("Planning loop"), unsafe_allow_html=True)
-        _render_attempt_cards(
-            ui_helpers.attempt_cards(stored["history"]),
-            reply_label="Raw Gemma reply",
-            ok_message="✓ Plan accepted (verified by dry_run)",
-        )
+        # The loop's own attempt records (propose → verify → repair)
+        with st.expander("Planning loop — propose, verify, repair"):
+            _render_attempt_cards(
+                ui_helpers.attempt_cards(stored["history"]),
+                reply_label="Raw model reply",
+                ok_message="✓ Plan accepted (verified by the guard)",
+            )
 
         # Execution log
         with st.expander("Execution log"):
@@ -721,11 +934,29 @@ with tabs["Text command"]:
                 )
             else:
                 st.caption("No actions executed yet.")
+    else:
+        st.markdown(
+            console_shell.zone_bar_html("Pipeline"),
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            empty_state(
+                "No run in this session.",
+                "Enter a mission and run a plan — the pipeline, the execution "
+                "timeline and the verification status appear here.",
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 # ── Safety Lab ────────────────────────────────────────────────────────────
 with tabs["Safety Lab"]:
-    st.markdown(DS.section_title("Safety lab", icon="🛡"), unsafe_allow_html=True)
+    st.markdown(
+        console_shell.zone_bar_html(
+            "Safety lab", "the verifier refuses, the loop repairs"
+        ),
+        unsafe_allow_html=True,
+    )
     st.markdown(
         f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
         f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.LG)}'>"
@@ -766,11 +997,15 @@ with tabs["Safety Lab"]:
             copy.deepcopy(new_world()) if dry_mode
             else copy.deepcopy(st.session_state.world)
         )
+        # The planner this lab actually uses: dry mode scripts the replies even
+        # when the sidebar engine is API/Local, and the logged provenance must
+        # follow the lab, not the sidebar.
+        lab_backend = "dry" if dry_mode else backend
         with st.spinner("Verifying plans and repairing failures…"):
             result = engine.run_plan(
                 safety_instruction,
                 lab_world,
-                backend="dry" if dry_mode else backend,
+                backend=lab_backend,
                 max_tries=max_tries,
             )
         stage_list = safety.stages(lab_world, result["history"])
@@ -812,7 +1047,7 @@ with tabs["Safety Lab"]:
                     latency=result["latency"],
                     path=str(LOG_PATH),
                     world=lab_world,
-                    mode=engine.backend_mode(backend),
+                    mode=engine.backend_mode(lab_backend),
                 )
             except Exception as exc:  # noqa: BLE001
                 st.warning(f"Run log could not be written: {exc}")
@@ -887,7 +1122,10 @@ with tabs["Safety Lab"]:
 if HAVE_MAPVISION:
     with tabs["Vision Lab"]:
         st.markdown(
-            DS.section_title("Vision lab", icon="👁"), unsafe_allow_html=True
+            console_shell.zone_bar_html(
+                "Vision lab", "an image becomes a world, and the world is checked"
+            ),
+            unsafe_allow_html=True,
         )
         st.markdown(
             f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
@@ -1203,9 +1441,12 @@ if HAVE_MAPVISION:
 
 # ── Replay ────────────────────────────────────────────────────────────────
 if HAVE_LOGGER:
-    with tabs["Replay"]:
+    with tabs["Run History"]:
         st.markdown(
-            DS.section_title("Replay", icon="⏮"), unsafe_allow_html=True
+            console_shell.zone_bar_html(
+                "Replay", "pure simulation — no planner, no vision, no network"
+            ),
+            unsafe_allow_html=True,
         )
         st.markdown(
             f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"

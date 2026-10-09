@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 from typing import Any, Callable
 
+from backend.logger.logger import redact_secrets
+from backend.parsing import parse_plan_reply
 from gemmabot.config import SIZE
 from gemmabot.simulator import step, reached_goal, DIRS, ARROW, DELTA
 
@@ -176,7 +177,9 @@ def _walk(world: dict, actions: list) -> dict:
             message = step(sim, action)
         except Exception as exc:  # noqa: BLE001
             outcome = "fault"
-            reason = f"action {index} ({action!r}) raised an unexpected error: {exc}"
+            reason = redact_secrets(
+                f"action {index} ({action!r}) raised an unexpected error: {exc}"
+            )
             break
 
         # step() signals failure through its return string.
@@ -432,20 +435,14 @@ def plan_with_repair(
         if on_attempt is not None:
             on_attempt(record)
 
-    def _parse_plan(text: str) -> tuple[str, list]:
-        text = re.sub(r"```(?:json)?", "", text)
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError("No JSON found in reply")
-        data = json.loads(text[start:end + 1])
-        return data.get("thought", ""), data.get("actions", [])
-
     for attempt in range(1, max_tries + 1):
         # ── Call the model ────────────────────────────────────────────────
         try:
             reply = ask(current_instruction, world)
         except Exception as exc:  # noqa: BLE001
-            feedback = f"ask() raised an error: {exc}"
+            # The exception can embed request details, and therefore the key:
+            # scrub before this feedback reaches the history, the UI or a log.
+            feedback = redact_secrets(f"ask() raised an error: {exc}")
             print(f"  [attempt {attempt}/{max_tries}] ask error — {feedback}")
             _record({
                 "attempt": attempt,
@@ -461,9 +458,9 @@ def plan_with_repair(
 
         # ── Parse the reply ───────────────────────────────────────────────
         try:
-            _thought, actions = _parse_plan(reply)
+            _thought, actions = parse_plan_reply(reply)
         except Exception as exc:  # noqa: BLE001
-            feedback = f"could not parse reply as JSON: {exc}"
+            feedback = redact_secrets(f"could not parse reply as JSON: {exc}")
             print(f"  [attempt {attempt}/{max_tries}] parse error — {feedback}")
             _record({
                 "attempt": attempt,

@@ -187,11 +187,42 @@ def test_live_status_survives_an_incomplete_record():
 def test_panel_renders_every_field_and_check():
     html = brain.brain_panel_html(_meta())
 
-    assert "Gemma Brain" in html
-    for label in ("Model", "Backend", "Status", "Attempts", "Latency", "Plan"):
-        assert f"data-field='{label.lower()}'" in html
+    assert "GemmaBot Guard" in html
+    for field_id in (
+        "model", "backend", "attempts", "plan", "verification", "simulation",
+        "execution", "status", "latency",
+    ):
+        assert f"data-field='{field_id}'" in html
     for check_id, _ in VERIFICATION_CHECKS:
         assert f"data-check='{check_id}'" in html
+
+
+def test_the_console_rows_are_the_runs_own_verdicts():
+    """VERIFICATION / SIMULATION / EXECUTION say only what really happened."""
+    passing = brain.brain_panel_html(_meta(executed=True, approved=True, reached=True))
+    assert "data-field='verification' data-value='PASSED'" in passing
+    assert "data-field='simulation' data-value='PASSED'" in passing
+    assert "data-field='execution' data-value='APPROVED'" in passing
+
+    # A verified plan that nothing simulated and nothing approved yet.
+    proposed = brain.brain_panel_html(_meta())
+    assert "data-field='verification' data-value='PASSED'" in proposed
+    assert "data-value='—'" in proposed
+    assert "data-field='simulation' data-value='PASSED'" not in proposed
+    assert "data-field='execution' data-value='APPROVED'" not in proposed
+
+    refused = brain.brain_panel_html(_meta(executed=True, halted="blocked", approved=True))
+    assert "data-field='simulation' data-value='FAILED'" in refused
+    assert "halted: blocked" in refused
+
+
+def test_nothing_verified_and_nothing_executed_is_not_drawn_as_a_pass():
+    html = brain.brain_panel_html(_meta(checks=None, status="repairing"))
+
+    assert "data-field='verification' data-value='—'" in html
+    assert "data-field='execution' data-value='—'" in html
+    assert "data-value='PASSED'" not in html
+    assert "data-value='APPROVED'" not in html
 
 
 def test_panel_marks_reflect_the_real_verdicts():

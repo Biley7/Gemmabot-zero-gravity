@@ -35,9 +35,11 @@ player only has to interpolate — it never re-simulates anything.
 from __future__ import annotations
 
 import copy
+from typing import Callable
 
+from backend.guard.contracts import ApprovedPlan
 from frontend.components import animations as A
-from frontend.panels.engine import execute
+from frontend.panels.engine import execute_approved, simulate
 
 CELL_STEP_MS = A.CELL_STEP_MS
 TURN_MS = A.TURN_MS
@@ -87,19 +89,49 @@ def _cells_between(start: list[int], end: list[int]) -> list[list[int]]:
 # Timeline
 # ---------------------------------------------------------------------------
 
-def build_timeline(world: dict, actions: list[dict]) -> dict:
-    """Execute *actions* on a copy of *world* and return the replay timeline.
-
-    The caller's world is never mutated; ``final_world`` carries the outcome.
-    """
-    initial = copy.deepcopy(world)
+def _capture_steps() -> tuple[list, Callable[[dict, dict], None]]:
+    """A step collector plus the callback that fills it, for one timeline."""
     captured: list[tuple[dict, dict]] = []
 
     def _capture(entry: dict, sim_world: dict) -> None:
         captured.append((entry, copy.deepcopy(sim_world)))
 
-    outcome = execute(world, actions or [], on_step=_capture)
+    return captured, _capture
 
+
+def build_timeline(world: dict, actions: list[dict]) -> dict:
+    """Simulate *actions* on a copy of *world* and return the replay timeline.
+
+    Simulation/demonstration path: it may replay any plan, including one the
+    verifier refused (the Safety Lab demonstrates exactly that).  Approved
+    execution uses :func:`build_approved_timeline`, which the guard
+    re-verifies before stepping.  The caller's world is never mutated;
+    ``final_world`` carries the outcome.
+    """
+    initial = copy.deepcopy(world)
+    captured, capture = _capture_steps()
+    outcome = simulate(initial, actions or [], on_step=capture)
+    return _timeline(initial, outcome, captured)
+
+
+def build_approved_timeline(approved: ApprovedPlan) -> dict:
+    """The same timeline for a guard-approved plan; the guard re-verifies it.
+
+    The approval carries the world snapshot it was verified against, so the
+    timeline starts from exactly that world.
+    """
+    initial = copy.deepcopy(approved.world)
+    captured, capture = _capture_steps()
+    outcome = execute_approved(approved, on_step=capture)
+    return _timeline(initial, outcome, captured)
+
+
+def _timeline(
+    initial: dict,
+    outcome: dict,
+    captured: list[tuple[dict, dict]],
+) -> dict:
+    """Derive the player timeline from one simulated/executed outcome."""
     events: list[dict] = []
     steps: list[dict] = []
     clock = 0

@@ -1,7 +1,7 @@
 # ── GemmaBot — production Dockerfile ──────────────────────────────────────
 # Multi-stage: builder installs deps, runner is the slim runtime image.
 # Build:  docker build -t gemmabot .
-# Run:    docker run -p 8501:8501 -e GEMINI_API_KEY=sk-... gemmabot
+# Run:    docker run -p 8501:8501 -e GEMINI_API_KEY=REPLACE_WITH_YOUR_OWN_KEY gemmabot
 # --------------------------------------------------------------------------
 
 # ── Stage 1: dependency builder ────────────────────────────────────────────

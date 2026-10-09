@@ -14,14 +14,23 @@
 | `engine.py` — backend selection, `run_plan`, `execute` | ✅ Fully working | Auto-fallback Gemini → Ollama |
 | `map_vision.py` — `read_map`, `check_world` (BFS) | ✅ Fully working | Sketch → grid with repair loop |
 | `logger.py` — `log_run`, `load_runs`, `summarize_run` | ✅ Fully working | JSONL, secrets redacted |
-| `app.py` + `ui_helpers.py` | ✅ Fully working | Streamlit UI, all 72 tests pass |
-| `gemmabot/repair.py` | ⚠️ Stub (`raise NotImplementedError`) | **Not called anywhere** — safe to ignore |
-| `gemmabot/service.py` | ⚠️ Stub | **Not called anywhere** — safe to ignore |
-| `gemmabot/verifier.py` | ⚠️ Stub | **Not called anywhere** — `dry_run` in `harness.py` is the real verifier |
-| `gemmabot/world_validation.py` | ⚠️ Stub | **Not called anywhere** — validation lives in `map_vision.check_world` |
-| `frontend/` package | ⚠️ Stub | **Not called anywhere** — UI is entirely in `app.py` |
+| `app.py` + `ui_helpers.py` | ✅ Fully working | Streamlit UI; 424 tests pass |
+| `backend/verifier/harness.py` | ✅ Fully working | The real verifier: `verify_plan`, `dry_run`, `plan_with_repair` |
+| `backend/vision/map_vision.py` | ✅ Fully working | `read_map` + `check_world_report` (3 checks, BFS) |
+| `backend/logger/logger.py` | ✅ Fully working | `log_run`, `load_runs`, `summarize_run`, secrets redacted |
+| `frontend/panels/engine.py` | ✅ Fully working | Backend selection, `run_plan`, `run_map_vision`, approval + execution |
+| `frontend/panels/*` + `frontend/components/*` | ✅ Fully working | The five labs and the design system |
+| `backend/guard/*` | ✅ Fully working | Planner adapters, canonical contracts, `plan`/`approve`/`execute` |
+| `backend/parsing.py` | ✅ Fully working | The one model-reply parser every layer uses |
 
-**The four stub modules are leftover scaffolding. They do not break anything and do not need to be filled in for the demo.**
+**The product pipeline is the GemmaBot Guard**: an AI model proposes, the guard
+validates, simulates and repairs, and only an `ApprovedPlan` may execute
+(`backend/guard/pipeline.py`). `gemmabot/repair.py`, `verifier.py`,
+`world_validation.py`, `service.py` and `frontend/components.py`/`frontend/state.py`
+no longer exist — they were empty scaffolding stubs, deleted in `8b11a1f`. The real
+verifier is `backend/verifier/harness.py`; the UI-facing interface is
+`frontend/panels/engine.py`. `gemmabot/schemas.py` was deleted in the Phase-1
+refactor; `backend/guard/contracts.py` is the canonical contract module.**
 
 ---
 
@@ -43,8 +52,10 @@ cd "Gemmabot MLH hackday"
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# Install dependencies
+# Install runtime dependencies
 pip install -r requirements.txt
+# ...and, to run the test suite, the dev extras (adds pytest)
+pip install -r requirements-dev.txt
 
 # Copy the env template and fill in your API key
 cp .env.example .env
@@ -53,8 +64,11 @@ cp .env.example .env
 Open `.env` and set:
 
 ```
-GEMINI_API_KEY=your_key_here
+GEMINI_API_KEY=REPLACE_WITH_YOUR_OWN_KEY
 ```
+
+The placeholder is not a credential. `.env` and every `.env.*` variant are
+gitignored and excluded from the Docker build context; never commit a real key.
 
 ### 2.3 Start the app
 
@@ -70,7 +84,7 @@ Open **http://localhost:8501** in your browser.
 # Runs the harness self-test — wall hit, bad JSON, correct plan, etc.
 python3 -m gemmabot.harness
 
-# Full test suite (72 tests, no network required)
+# Full test suite (424 tests, no network required)
 python3 -m pytest tests/ -q
 ```
 
@@ -171,7 +185,7 @@ docker build -t gemmabot .
 
 # Run locally to test the image before pushing
 docker run --rm -p 8501:8501 \
-  -e GEMINI_API_KEY=your_key_here \
+  -e GEMINI_API_KEY=REPLACE_WITH_YOUR_OWN_KEY \
   gemmabot
 
 # Push to Docker Hub (replace <user> with your Docker Hub username)
@@ -185,7 +199,7 @@ On your VPS / server:
 docker pull <user>/gemmabot:latest
 docker run -d --restart=unless-stopped \
   -p 8501:8501 \
-  -e GEMINI_API_KEY=your_key_here \
+  -e GEMINI_API_KEY=REPLACE_WITH_YOUR_OWN_KEY \
   --name gemmabot \
   <user>/gemmabot:latest
 ```
@@ -239,8 +253,11 @@ requirements.txt        # Pinned dependency versions
 **`ModuleNotFoundError: No module named 'google'`**
 → Run `pip install -r requirements.txt` inside your virtual environment.
 
-**`GEMINI_API_KEY not set` / 429 rate limit**
-→ The app auto-falls back to Ollama if the key is missing or rate-limited. Make sure Ollama is running (`ollama serve`) and the model is pulled (`ollama pull gemma4:e4b`).
+**`No Gemini API key configured` / 429 rate limit**
+→ The API backend fails before any network call when no key is set; in `Auto`
+the engine then falls back to Ollama. Make sure Ollama is running
+(`ollama serve`) and the model is pulled (`ollama pull gemma4:e4b`), or set
+`GEMINI_API_KEY` in `.env` (never commit it).
 
 **Streamlit blank page on Render / DO**
 → Wait 30–45 s for the container to start. Check the deploy logs for Python import errors. The `/_stcore/health` endpoint returns 200 when the app is ready.

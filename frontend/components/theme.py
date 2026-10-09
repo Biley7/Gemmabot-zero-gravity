@@ -575,6 +575,331 @@ hr {{
     scrollbar-width: thin;
 }}
 
+/* ── Console shell (frontend/console/shell.py) ────────────────────────────
+   The header, the console status bar and the simulator viewport.  This is the
+   frame that makes the five labs read as one instrument rather than as pages:
+   one wordmark, one status vocabulary, one framed drawing surface. */
+
+.gb-console-head  {{
+    display: flex;
+    align-items: baseline;
+    gap: {S.px(S.MD)};
+    padding-bottom: {S.px(S.SM)};
+}}
+.gb-wordmark  {{
+    font-family: {T.FONT_SANS};
+    font-size: 22px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: -0.01em;
+    line-height: {T.LEADING_TIGHT};
+    color: {C.TEXT_PRIMARY};
+}}
+.gb-tagline  {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    white-space: nowrap;
+}}
+.gb-head-rule  {{
+    flex: 1;
+    height: 1px;
+    min-width: {S.px(S.SM)};
+    align-self: center;
+    background: {C.BORDER_SUBTLE};
+}}
+.gb-head-meta  {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_SECONDARY};
+    letter-spacing: {T.TRACKING_WIDE};
+    white-space: nowrap;
+}}
+.gb-head-model {{ color: {C.TELEMETRY_VALUE}; }}
+
+.gb-console-bar  {{
+    display: flex;
+    align-items: center;
+    gap: {S.px(S.MD)};
+    padding: {S.px(S.SM)} 0;
+    border-bottom: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    margin-bottom: {S.px(S.LG)};
+}}
+.gb-console-chip  {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    line-height: {T.LEADING_TIGHT};
+    padding: {S.px(S.XS)} {S.px(S.SM)};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_DEFAULT};
+    border-radius: {S.px(S.RADIUS_SM)};
+    background: {C.BG_ELEVATED};
+    color: {C.TEXT_SECONDARY};
+    white-space: nowrap;
+    transition: {A.transition("background-color", "border-color", "color",
+                             duration=A.DURATION_FAST)};
+}}
+.gb-console-chip[data-status="thinking"] {{
+    background: {C.THINKING_BG}; border-color: {C.THINKING_BORDER};
+    color: {C.THINKING}; animation: {A.animation_pulse(1400)};
+}}
+.gb-console-chip[data-status="verifying"],
+.gb-console-chip[data-status="executing"] {{
+    background: {C.RUNNING_BG}; border-color: {C.RUNNING_BORDER}; color: {C.RUNNING};
+}}
+.gb-console-chip[data-status="complete"] {{
+    background: {C.SUCCESS_BG}; border-color: {C.SUCCESS_BORDER}; color: {C.SUCCESS};
+}}
+.gb-console-chip[data-status="failed"] {{
+    background: {C.ERROR_BG}; border-color: {C.ERROR_BORDER}; color: {C.ERROR};
+}}
+.gb-console-activity  {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    color: {C.TEXT_SECONDARY};
+    min-width: 0;
+}}
+.gb-console-meta  {{
+    margin-left: auto;
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TELEMETRY_UNIT};
+    white-space: nowrap;
+}}
+
+/* The viewport: the drawing surface the simulator owns.  The floor is darker
+   than any panel, so the board reads as an instrument, not as a card. */
+.gb-viewport  {{
+    background: {C.BG_INSET};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_DEFAULT};
+    border-radius: {S.px(S.RADIUS_LG)};
+    overflow: hidden;
+}}
+.gb-viewport-bar  {{
+    display: flex;
+    align-items: center;
+    gap: {S.px(S.SM)};
+    padding: {S.px(S.SM)} {S.px(S.MD)};
+    background: {C.BG_SURFACE};
+    border-bottom: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+}}
+.gb-viewport-title  {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    color: {C.TEXT_SECONDARY};
+    white-space: nowrap;
+}}
+.gb-viewport-meta  {{
+    margin-left: auto;
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TELEMETRY_LABEL};
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+.gb-viewport-body  {{
+    display: flex;
+    justify-content: center;
+    padding: {S.px(S.MD)};
+}}
+.gb-viewport-foot  {{
+    padding: {S.px(S.SM)} {S.px(S.MD)};
+    background: {C.BG_SURFACE};
+    border-top: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+}}
+
+/* ── Console zones (frontend/console/pipeline.py) ─────────────────────────
+   One label per zone, then the instrument itself. */
+.gb-zone {{ margin-top: {S.px(S.LG)}; }}
+.gb-zone-bar {{
+    display: flex;
+    align-items: baseline;
+    gap: {S.px(S.SM)};
+    margin-bottom: {S.px(S.SM)};
+}}
+.gb-zone-title {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    color: {C.TEXT_SECONDARY};
+}}
+.gb-zone-meta {{
+    margin-left: auto;
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    white-space: nowrap;
+}}
+
+/* ── Pipeline ────────────────────────────────────────────────────────────
+   Six stages, in order, each carrying the state it really reached.  The state
+   is a 2px edge on the left plus the label colour — no banners. */
+.gb-pipe {{
+    display: flex;
+    flex-wrap: wrap;
+    background: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-radius: {S.px(S.RADIUS_MD)};
+    overflow: hidden;
+}}
+.gb-pipe-stage {{
+    position: relative;
+    flex: 1 1 {S.px(112)};
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: {S.px(S.SM)} {S.px(S.MD)};
+    border-right: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    transition: {A.transition("background-color", duration=A.DURATION_FAST)};
+}}
+.gb-pipe-stage:last-child {{ border-right: none; }}
+.gb-pipe-stage::before {{
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: transparent;
+}}
+.gb-pipe-label {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    letter-spacing: {T.TRACKING_WIDE};
+    color: {C.TEXT_MUTED};
+    white-space: nowrap;
+}}
+/* The flow arrow between stages is information: it says which way the
+   pipeline runs. */
+.gb-pipe-stage:not(:last-child) .gb-pipe-label::after {{
+    content: "→";
+    margin-left: {S.px(S.XS)};
+    color: {C.BORDER_STRONG};
+}}
+.gb-pipe-detail {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+.gb-pipe-stage[data-state="passed"]::before {{ background: {C.SUCCESS}; }}
+.gb-pipe-stage[data-state="passed"] .gb-pipe-label {{ color: {C.SUCCESS}; }}
+.gb-pipe-stage[data-state="failed"]::before {{ background: {C.ERROR}; }}
+.gb-pipe-stage[data-state="failed"] .gb-pipe-label {{ color: {C.ERROR}; }}
+.gb-pipe-stage[data-state="failed"] .gb-pipe-detail {{ color: {C.ERROR}; }}
+.gb-pipe-stage[data-state="running"] {{ background: {C.RUNNING_BG}; }}
+.gb-pipe-stage[data-state="running"]::before {{
+    background: {C.ACCENT_BLUE};
+    animation: {A.animation_pulse(1600)};
+}}
+.gb-pipe-stage[data-state="running"] .gb-pipe-label {{ color: {C.RUNNING}; }}
+.gb-pipe-stage[data-state="skipped"]::before {{ background: {C.BORDER_DEFAULT}; }}
+.gb-pipe-stage[data-state="skipped"] .gb-pipe-label {{ color: {C.TEXT_SECONDARY}; }}
+
+/* ── Action timeline ─────────────────────────────────────────────────────
+   The plan, action by action, with the message the simulator logged for it.
+   The row the execution stands on is marked; the actions after a halt stay
+   pending, because a plan is not an execution. */
+.gb-tl {{
+    display: flex;
+    flex-direction: column;
+    background: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-radius: {S.px(S.RADIUS_MD)};
+    overflow: hidden;
+}}
+.gb-tl-row {{
+    display: flex;
+    align-items: baseline;
+    gap: {S.px(S.SM)};
+    padding: {S.px(S.XS)} {S.px(S.MD)};
+    border-bottom: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-left: 2px solid transparent;
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    color: {C.TEXT_SECONDARY};
+    transition: {A.transition("background-color", "border-color", "color",
+                             duration=A.DURATION_FAST)};
+}}
+.gb-tl-row:last-child {{ border-bottom: none; }}
+.gb-tl-row:hover {{ background: {C.BG_OVERLAY}; }}
+.gb-tl-idx {{ color: {C.TEXT_MUTED}; flex-shrink: 0; width: {S.px(20)}; text-align: right; }}
+.gb-tl-cmd {{
+    color: {C.TEXT_PRIMARY};
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+    min-width: {S.px(104)};
+}}
+.gb-tl-msg {{
+    margin-left: auto;
+    color: {C.TEXT_MUTED};
+    font-size: {T.SIZE_XS}px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+.gb-tl-row[data-state="done"] {{ border-left-color: {C.SUCCESS_BORDER}; }}
+.gb-tl-row[data-state="done"] .gb-tl-cmd {{ color: {C.TEXT_SECONDARY}; }}
+.gb-tl-row[data-state="pending"] .gb-tl-cmd {{ color: {C.TEXT_MUTED}; }}
+.gb-tl-row[data-state="blocked"] {{ border-left-color: {C.ERROR}; }}
+.gb-tl-row[data-state="blocked"] .gb-tl-cmd,
+.gb-tl-row[data-state="blocked"] .gb-tl-msg {{ color: {C.ERROR}; }}
+.gb-tl-row[data-current="true"] {{ background: {C.RUNNING_BG}; }}
+.gb-tl-row[data-current="true"] .gb-tl-idx {{ color: {C.ACCENT_BLUE}; }}
+
+/* ── Status strip ────────────────────────────────────────────────────────
+   The four harness checks, in one line, with the verdict carried by the mark
+   rather than by a banner. */
+.gb-statusstrip {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: {S.px(S.SM)} {S.px(S.LG)};
+    padding: {S.px(S.SM)} 0;
+}}
+.gb-status-item {{
+    display: inline-flex;
+    align-items: center;
+    gap: {S.px(S.XS)};
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    letter-spacing: {T.TRACKING_WIDE};
+    color: {C.TEXT_MUTED};
+}}
+.gb-status-mark {{ font-size: {T.SIZE_BASE}px; color: {C.TEXT_MUTED}; }}
+.gb-status-item[data-verdict="true"] .gb-status-mark {{ color: {C.SUCCESS}; }}
+.gb-status-item[data-verdict="true"] .gb-status-label {{ color: {C.TEXT_SECONDARY}; }}
+.gb-status-item[data-verdict="false"] .gb-status-mark,
+.gb-status-item[data-verdict="false"] .gb-status-label {{ color: {C.ERROR}; }}
+.gb-status-item:not(:last-child)::after {{
+    content: "·";
+    margin-left: {S.px(S.LG)};
+    color: {C.BORDER_STRONG};
+}}
+
+/* ── Console command block ───────────────────────────────────────────────
+   The left column of the Mission screen: a label, a readout, an action. */
+.gb-command {{
+    display: flex;
+    flex-direction: column;
+    gap: {S.px(S.SM)};
+    padding: {S.px(S.MD)};
+    background: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-radius: {S.px(S.RADIUS_MD)};
+}}
+
 /* ── Focus ──────────────────────────────────────────────────────────────
    Keyboard focus is a visible ring; pointer clicks stay quiet.  Everything
    below sets a border colour, so without this a keyboard user could not see
@@ -639,6 +964,10 @@ hr {{
 
 @media (max-width: 1100px) {{
     .gb-panel {{ padding: {S.px(S.LG)}; }}
+    /* The pipeline wraps into two rows instead of squeezing its details to
+       nothing, and the timeline keeps its command column readable. */
+    .gb-pipe-stage {{ flex: 1 1 {S.px(140)}; }}
+    .gb-tl-cmd {{ min-width: {S.px(84)}; }}
 }}
 
 @media (max-width: 720px) {{
@@ -653,6 +982,21 @@ hr {{
         white-space: nowrap;
         padding: {S.px(S.XS)} {S.px(S.SM)} !important;
     }}
+    /* The header stacks rather than clipping the model readout, and the
+       pipeline goes to two stages per row. */
+    .gb-console-head {{
+        flex-wrap: wrap;
+        row-gap: {S.px(S.XS)};
+    }}
+    .gb-tagline {{ white-space: normal; }}
+    .gb-head-rule {{ display: none; }}
+    .gb-head-meta {{ white-space: normal; }}
+    .gb-console-bar {{ flex-wrap: wrap; row-gap: {S.px(S.XS)}; }}
+    .gb-console-meta {{ margin-left: 0; }}
+    .gb-pipe-stage {{ flex: 1 1 50%; }}
+    .gb-pipe-stage:nth-child(even) {{ border-right: none; }}
+    .gb-tl-cmd {{ min-width: 0; }}
+    .gb-tl-msg {{ display: none; }}
 }}
 </style>
 """

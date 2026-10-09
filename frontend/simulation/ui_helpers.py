@@ -28,6 +28,7 @@ import re
 from typing import Any
 
 from gemmabot.simulator import ARROW
+from gemmabot.config import SIZE
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
@@ -217,12 +218,15 @@ def _hero_cell(
 ) -> str:
     """Return one hero-grid cell div with full styling.
 
+    The cell carries no size of its own: the grid gives every column an equal
+    fraction of the board (``.gb-hero-cells``) and the cell keeps itself square
+    with ``aspect-ratio``.  One board therefore fits a phone column and a
+    projector without a single magic number, and never overflows sideways.
+
     *is_danger* marks the cell a plan was refused entry to (the Safety Lab's
     collision location).  It outranks the wall style so the obstacle that
     blocked the plan is unmistakable.
     """
-    cs = cell_px
-    icon_px = int(cs * 0.52)
     r = S.RADIUS_SM
 
     # ── Determine background, border, box-shadow ──────────────────────────
@@ -244,7 +248,10 @@ def _hero_cell(
     elif is_wall:
         bg      = C.GRID_WALL
         border  = C.GRID_WALL_EDGE
-        shadow  = f"inset 0 1px 0 {C.GRID_WALL_SURFACE}60, inset 0 -1px 0 {C.GRID_WALL_EDGE}"
+        shadow  = (
+            f"inset 0 1px 0 {C.GRID_WALL_SURFACE}cc, "
+            f"inset 0 -2px 0 {C.GRID_WALL_EDGE}"
+        )
         extra   = ""
     elif is_current:
         bg      = C.GRID_CURRENT
@@ -266,39 +273,37 @@ def _hero_cell(
     hover_cls = "" if (is_wall or is_danger) else " gb-hero-cell-hover"
 
     base_style = (
-        f"width:{cs}px;height:{cs}px;"
-        f"display:flex;align-items:center;justify-content:center;"
-        f"box-sizing:border-box;position:relative;"
         f"background:{bg};"
         f"border:1px solid {border};"
         f"border-radius:{r}px;"
         f"box-shadow:{shadow};"
-        f"transition:background 150ms ease, box-shadow 150ms ease;"
         f"{extra}"
     )
 
-    # ── Icon ──────────────────────────────────────────────────────────────
+    # ── Icon — sized as a fraction of the cell, so it scales with the board ─
     if is_robot:
         svg_tmpl = ROBOT_SVG.get(direction, ROBOT_SVG["E"])
         icon_svg = svg_tmpl.format(fg=C.ACCENT_BLUE, stroke=C.ACCENT_BLUE_DIM)
+        icon_cls = "gb-hero-icon gb-hero-icon-robot"
     elif is_goal:
         icon_svg = GOAL_SVG.format(fg=C.SUCCESS)
+        icon_cls = "gb-hero-icon"
     elif is_danger:
         # Keep the obstacle's own texture, tinted red: you see exactly which
         # wall the plan was refused entry to.
         icon_svg = (WALL_SVG if is_wall else PATH_SVG).format(fg=C.ERROR)
+        icon_cls = "gb-hero-icon"
     elif is_wall:
         icon_svg = WALL_SVG.format(fg=C.TEXT_MUTED)
+        icon_cls = "gb-hero-icon"
     elif is_path or is_current:
         icon_svg = PATH_SVG.format(fg=C.RUNNING)
+        icon_cls = "gb-hero-icon gb-hero-icon-path"
     else:
         icon_svg = ""
+        icon_cls = ""
 
-    icon_html = (
-        f"<div style='width:{icon_px}px;height:{icon_px}px;flex-shrink:0'>"
-        f"{icon_svg}</div>"
-        if icon_svg else ""
-    )
+    icon_html = f"<span class='{icon_cls}'>{icon_svg}</span>" if icon_svg else ""
 
     return (
         f"<div class='gb-hero-cell{hover_cls}' "
@@ -310,7 +315,12 @@ def _hero_cell(
 
 
 def _hero_css(cell_px: int) -> str:
-    """Inline <style> block scoped to the hero grid."""
+    """Inline <style> block scoped to the hero grid.
+
+    *cell_px* is the board's **maximum** cell size: the layout is fluid (equal
+    fractions + ``aspect-ratio``), so this only caps how large one cell may
+    grow.  Below that the board simply shrinks to the column it is in.
+    """
     return (
         "<style>"
         ".gb-hero-cell-hover:hover {"
@@ -319,11 +329,39 @@ def _hero_css(cell_px: int) -> str:
         f"  box-shadow:inset 0 0 0 1px {C.BORDER_STRONG} !important;"
         "}"
         ".gb-hero-grid {"
-        "  display:inline-block;"
-        f"  background:{C.BG_BASE};"
+        "  display:flex;flex-direction:column;"
+        f"  gap:{S.px(S.XS)};"
+        "  width:100%;"
+        f"  max-width:{cell_px * SIZE + 24 + 12}px;"
+        f"  background:{C.BG_INSET};"
         f"  padding:{S.px(S.SM)};"
+        f"  border:1px solid {C.BORDER_SUBTLE};"
         f"  border-radius:{S.RADIUS_LG}px;"
         "}"
+        ".gb-hero-row, .gb-hero-colrow {"
+        f"  display:grid;grid-template-columns:{S.CELL_LABEL_HERO}px 1fr;"
+        f"  gap:{S.px(S.XS)};"
+        "}"
+        ".gb-hero-track, .gb-hero-colnums {"
+        f"  display:grid;grid-template-columns:repeat({SIZE}, 1fr);"
+        "  gap:1px;"
+        "}"
+        ".gb-hero-cell {"
+        "  aspect-ratio:1 / 1;"
+        "  display:flex;align-items:center;justify-content:center;"
+        "  box-sizing:border-box;position:relative;"
+        "  transition:background 150ms ease, box-shadow 150ms ease;"
+        "}"
+        ".gb-hero-icon { display:flex;align-items:center;justify-content:center;"
+        "  width:54%;height:54%; }"
+        ".gb-hero-icon-path { width:34%;height:34%; }"
+        ".gb-hero-icon svg { display:block;width:100%;height:100%; }"
+        ".gb-hero-ylabel, .gb-hero-collabel {"
+        "  display:flex;align-items:center;justify-content:center;"
+        f"  font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
+        f"  color:{C.GRID_LABEL};letter-spacing:0.04em;"
+        "}"
+        ".gb-hero-ylabel { min-height:0; }"
         "</style>"
     )
 
@@ -359,47 +397,28 @@ def world_grid_html(
     goal    = world.get("goal",  [7, 7])
     walls   = world.get("walls", [])
     dirn    = world.get("dir",   "E")
-    from gemmabot.config import SIZE
 
     wall_set    = {tuple(w) for w in walls}
     path_set    = {tuple(p) for p in path}
 
-    cs    = cell_px
-    lw    = S.CELL_LABEL_HERO   # label gutter width
-    lh    = 24                  # label row height
+    cs = cell_px
 
     parts: list[str] = [_hero_css(cs)]
-
-    parts.append(
-        f"<div class='gb-hero-grid' style='"
-        f"display:inline-block;background:{C.BG_BASE};"
-        f"padding:{S.px(S.SM)};border-radius:{S.RADIUS_LG}px'>"
-    )
+    parts.append("<div class='gb-hero-grid'>")
 
     # ── Column coordinate labels ──────────────────────────────────────────
-    parts.append(
-        f"<div style='display:flex;margin-bottom:2px'>"
-        f"<div style='width:{lw}px;height:{lh}px'></div>"
-    )
+    parts.append("<div class='gb-hero-colrow'>")
+    parts.append("<span class='gb-hero-corner'></span>")
+    parts.append("<div class='gb-hero-colnums'>")
     for x in range(SIZE):
-        parts.append(
-            f"<div style='width:{cs}px;height:{lh}px;display:flex;"
-            f"align-items:center;justify-content:center;"
-            f"font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.GRID_LABEL};letter-spacing:0.04em'>{x}</div>"
-        )
-    parts.append("</div>")
+        parts.append(f"<span class='gb-hero-collabel' data-axis='x'>{x}</span>")
+    parts.append("</div></div>")
 
-    # ── Grid rows ─────────────────────────────────────────────────────────
+    # ── Grid rows: one row label and one square per cell ──────────────────
     for y in range(SIZE):
-        parts.append(
-            f"<div style='display:flex;margin-bottom:1px'>"
-            # Row label
-            f"<div style='width:{lw}px;height:{cs}px;display:flex;"
-            f"align-items:center;justify-content:center;"
-            f"font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-            f"color:{C.GRID_LABEL};letter-spacing:0.04em;margin-right:1px'>{y}</div>"
-        )
+        parts.append("<div class='gb-hero-row'>")
+        parts.append(f"<span class='gb-hero-ylabel' data-axis='y'>{y}</span>")
+        parts.append("<div class='gb-hero-track'>")
         for x in range(SIZE):
             coord = (x, y)
             is_robot   = [x, y] == robot
@@ -425,9 +444,7 @@ def world_grid_html(
                     is_danger=is_danger,
                 )
             )
-            if x < SIZE - 1:
-                parts.append(f"<div style='width:1px;background:{C.GRID_BORDER}'></div>")
-        parts.append("</div>")
+        parts.append("</div></div>")
 
     parts.append("</div>")   # .gb-hero-grid
     return "".join(parts)

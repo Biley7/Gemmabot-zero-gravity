@@ -1,7 +1,25 @@
+# ── Secrets — never commit credentials or machine-local env files ──────────
+# .env.* catches .env.local, .env.production, ... ; the template stays tracked.
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+service-account*.json
+.streamlit/secrets.toml
+
+# ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
 .venv/
+venv/
+.pytest_cache/
+
+# ── OS / editor ────────────────────────────────────────────────────────────
 .DS_Store
+
+# ── Run artefacts ──────────────────────────────────────────────────────────
 logs/
 logs/*.jsonl
-.streamlit/secrets.toml

@@ -13,9 +13,18 @@ step, turns rotate smoothly, the trail is drawn in behind it and the active
 step is highlighted in the step list.  Transport: play / pause / reset and
 0.5x / 1x / 2x / 4x playback speed.
 
+The stage is drawn at a fixed cell size (the geometry the animation
+interpolates in), then scaled down by ``fit()`` when the frame it was given is
+narrower than that — a console viewport is whatever width the operator's
+window is, and the drawing must neither overflow nor be clipped.
+
+``show_steps=False`` drops the built-in step list for the hosts that render
+their own action timeline next to it (the Mission console does); the transport
+and the live step readout stay either way.
+
 Public surface
 --------------
-player_html(timeline, *, cell_px, autoplay, speed) -> str
+player_html(timeline, *, cell_px, autoplay, speed, show_steps) -> str
 player_height(cell_px) -> int      # iframe height that avoids scrolling
 """
 from __future__ import annotations
@@ -218,6 +227,9 @@ html, body {{
   gap: {S.px(S.LG)};
 }}
 .gb-stage-wrap {{ display: flex; flex-direction: column; }}
+/* Compact: the host draws its own action timeline, so the stage is centred in
+   whatever width the frame gives it. */
+.gb-exec-compact .gb-stage-wrap {{ margin: 0 auto; }}
 .gb-colrow {{ display: flex; margin-left: {LABEL_W}px; }}
 .gb-rowwrap {{ display: flex; }}
 .gb-rows {{ display: flex; flex-direction: column; }}
@@ -649,7 +661,34 @@ _JS = r"""
     }
   }
 
+  // ── Fit: the stage is drawn in fixed pixels, so scale it into the frame ─
+  // The console viewport is whatever width the operator's window is.  The
+  // geometry the animation interpolates must not change, so the whole stage is
+  // scaled with a CSS transform instead — never re-laid-out, never clipped.
+  var wrapEl = document.querySelector('.gb-stage-wrap');
+
+  function fit() {
+    if (!wrapEl) { return; }
+    var body = document.querySelector('.gb-body');
+    if (!body) { return; }
+    var avail = body.clientWidth;
+    var sideBySide = false;
+    if (stepsEl) {
+      sideBySide = stepsEl.offsetTop < wrapEl.offsetTop + 8;
+      if (sideBySide) { avail -= stepsEl.offsetWidth + 16; }
+    }
+    var natural = wrapEl.offsetWidth;
+    var scale = (natural > 0 && avail > 0) ? Math.min(1, avail / natural) : 1;
+    wrapEl.style.transformOrigin = 'top left';
+    wrapEl.style.transform = scale < 0.999 ? 'scale(' + scale + ')' : 'none';
+    // The scaled box keeps its layout height, so give the gap back.
+    wrapEl.style.marginBottom = scale < 0.999
+      ? ((scale - 1) * wrapEl.offsetHeight) + 'px'
+      : '0';
+  }
+
   // ── Controls ──────────────────────────────────────────────────────────
+  var stepsEl = document.querySelector('.gb-steps');
   if (playBtn) {
     playBtn.addEventListener('click', function () { if (playing) { pause(); } else { play(); } });
   }
@@ -671,6 +710,8 @@ _JS = r"""
 
   // ── Boot: autoplay the fresh run, otherwise show the finished execution ─
   setSpeed(speed);
+  fit();
+  window.addEventListener('resize', fit);
   resetDynamic();
   if (TL.duration_ms > 0 && TL.autoplay && !reduced) {
     playing = true;
@@ -729,12 +770,14 @@ def player_html(
     cell_px: int = S.CELL_SIZE,
     autoplay: bool = True,
     speed: float = A.DEFAULT_SPEED,
+    show_steps: bool = True,
 ) -> str:
     """Complete HTML document replaying one execution *timeline*.
 
     ``autoplay`` starts the run from the first cell; ``autoplay=False`` opens
     on the finished execution so a Streamlit rerun never replays by surprise —
-    the Play button then acts as Replay.
+    the Play button then acts as Replay.  ``show_steps=False`` leaves the step
+    list out for a host that renders its own action timeline.
     """
     cs = int(cell_px)
     side = stage_px(cs)
@@ -748,7 +791,7 @@ def player_html(
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         f"{_css(cs)}"
         "</head><body>"
-        "<div class='gb-exec'>"
+        f"<div class='gb-exec{' gb-exec-compact' if not show_steps else ''}'>"
         "<div class='gb-head'>"
         "<span class='gb-head-title'>Execution playback</span>"
         "<span class='gb-rule'></span>"
@@ -767,8 +810,11 @@ def player_html(
         f"viewBox='0 0 {side} {side}' style='--gb-trace-len:{pitch(cs)}px'></svg>"
         f"{_robot_html(cs)}"
         "</div></div></div>"
-        f"<div class='gb-steps'>{_steps_html(timeline.get('steps', []))}</div>"
-        "</div>"
+        + (
+            f"<div class='gb-steps'>{_steps_html(timeline.get('steps', []))}</div>"
+            if show_steps else ""
+        )
+        + "</div>"
         "<div class='gb-transport'>"
         "<button type='button' class='gb-btn gb-btn-primary' id='gb-play'>&#9654; Play</button>"
         "<button type='button' class='gb-btn' id='gb-reset'>&#10226; Reset</button>"

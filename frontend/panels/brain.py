@@ -1,23 +1,28 @@
-"""Gemma Brain panel — structured run metadata for one planning run.
+"""GemmaBot Guard console — structured run metadata for one planning run.
 
 Owner: FRONTEND.  No Streamlit import, no network, no AI.
 
-What the panel shows
---------------------
+What the console shows
+----------------------
 Only facts a run actually produced: which backend answered, the model id
 ``gemmabot.config`` holds for it, how many attempts the repair loop made, the
-measured latency, the size of the plan, and the four checks
+measured latency, the size of the plan, the verdicts the run reached
+(VERIFICATION · SIMULATION · EXECUTION) and the four checks
 ``backend.verifier.harness.verify_plan`` evaluated.  Model reasoning is
-deliberately absent: the panel renders metadata, never a transcript, so there
+deliberately absent: the console renders metadata, never a transcript, so there
 is no chain of thought in it.
 
-A check that was never proven (``ok is None``) is drawn as "—" with the reason
-it is unproven — an unproven check is never shown as a pass.
+Two rules the console never breaks:
+
+* a check that was never proven (``ok is None``) is drawn as "–" with the
+  reason it is unproven — an unproven check is never shown as a pass;
+* a verdict nothing produced is drawn as "—" — SIMULATION without a timeline
+  is *not run*, not *passed*.
 
 Public surface
 --------------
 brain_metadata(...)        -> dict   display model for one run
-brain_panel_html(meta)     -> str    the panel, built from design-system parts
+brain_panel_html(meta)     -> str    the console, built from design-system parts
 model_family(model_id)     -> str    "gemma-4-26b-a4b-it" -> "Gemma 4"
 """
 from __future__ import annotations
@@ -29,12 +34,15 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
-from frontend.components.blocks import escape as _e
+from frontend.components.blocks import escape as _e, state_color as _state_color
 
-# The three loop states the panel reports.  They are not invented: the app
-# moves through them from real events (an attempt in flight, an attempt that
-# failed and is being repaired, a plan that was verified and is executing).
+# The loop states the console reports.  They are not invented: the app moves
+# through them from real events (an attempt in flight, an attempt that failed
+# and is being repaired, a plan that was verified and is executing), plus
+# ``ready`` — the session that has not run anything at all, which is where the
+# console starts.
 STATUS_LABELS: dict[str, str] = {
+    "ready": "Ready",
     "thinking": "Thinking",
     "repairing": "Repairing",
     "executing": "Executing",
@@ -42,6 +50,7 @@ STATUS_LABELS: dict[str, str] = {
 
 # StatusChip states from the design system.
 STATUS_STATES: dict[str, str] = {
+    "ready": "neutral",
     "thinking": "thinking",
     "repairing": "warning",
     "executing": "running",
@@ -53,6 +62,29 @@ _MARK_COLORS: dict[Any, str] = {
     True: C.SUCCESS,
     False: C.ERROR,
     None: C.TEXT_MUTED,
+}
+
+# Verdict vocabulary for the three console rows.  A verdict is only ever
+# claimed by the artifact that produced it; "unknown" is drawn as "—".
+_VERDICT_LABELS: dict[str, str] = {
+    "passed": "PASSED",
+    "failed": "FAILED",
+    "unknown": "—",
+}
+_VERDICT_STATES: dict[str, str] = {
+    "passed": "success",
+    "failed": "error",
+    "unknown": "neutral",
+}
+_EXECUTION_LABELS: dict[str, str] = {
+    "approved": "APPROVED",
+    "refused": "REFUSED",
+    "unknown": "—",
+}
+_EXECUTION_STATES: dict[str, str] = {
+    "approved": "success",
+    "refused": "error",
+    "unknown": "neutral",
 }
 
 
@@ -136,6 +168,97 @@ def _normalise_checks(checks: list[dict] | None) -> list[dict]:
     return out
 
 
+def _verification_verdict(checks: list[dict]) -> dict:
+    """PASSED / FAILED / — for the four checks, from the checks themselves."""
+    proven = [entry for entry in checks if entry["ok"] is not None]
+    if not proven:
+        return {
+            "key": "unknown",
+            "label": _VERDICT_LABELS["unknown"],
+            "state": _VERDICT_STATES["unknown"],
+            "detail": "no check was evaluated",
+        }
+    failed = [entry for entry in proven if entry["ok"] is False]
+    if failed:
+        return {
+            "key": "failed",
+            "label": _VERDICT_LABELS["failed"],
+            "state": _VERDICT_STATES["failed"],
+            "detail": f"{len(failed)} of {len(proven)} checks failed: "
+                      f"{failed[0]['label'].lower()}",
+        }
+    return {
+        "key": "passed",
+        "label": _VERDICT_LABELS["passed"],
+        "state": _VERDICT_STATES["passed"],
+        "detail": f"all {len(proven)} checks passed",
+    }
+
+
+def _simulation_verdict(executed: bool | None, halted: str | None) -> dict:
+    """PASSED / FAILED / — for the simulator's own run of the approved plan."""
+    if executed is None:
+        return {
+            "key": "unknown",
+            "label": _VERDICT_LABELS["unknown"],
+            "state": _VERDICT_STATES["unknown"],
+            "detail": "nothing was simulated",
+        }
+    if not executed:
+        return {
+            "key": "failed",
+            "label": _VERDICT_LABELS["failed"],
+            "state": _VERDICT_STATES["failed"],
+            "detail": "the simulator refused the approved plan",
+        }
+    if halted:
+        return {
+            "key": "failed",
+            "label": _VERDICT_LABELS["failed"],
+            "state": _VERDICT_STATES["failed"],
+            "detail": f"the simulator halted: {halted}",
+        }
+    return {
+        "key": "passed",
+        "label": _VERDICT_LABELS["passed"],
+        "state": _VERDICT_STATES["passed"],
+        "detail": "every action was applied by the simulator",
+    }
+
+
+def _execution_verdict(
+    approved: bool | None,
+    executed: bool | None,
+    reached: bool | None,
+) -> dict:
+    """APPROVED / REFUSED / — for the execution gate."""
+    if approved is None:
+        return {
+            "key": "unknown",
+            "label": _EXECUTION_LABELS["unknown"],
+            "state": _EXECUTION_STATES["unknown"],
+            "detail": "no approved plan",
+        }
+    if approved is False:
+        return {
+            "key": "refused",
+            "label": _EXECUTION_LABELS["refused"],
+            "state": _EXECUTION_STATES["refused"],
+            "detail": "the execution gate refused the plan",
+        }
+    detail = "the execution gate sealed the plan"
+    if executed is True and reached is True:
+        detail += " — the robot reached the goal"
+    elif executed is True:
+        detail += " — the robot stopped short of the goal"
+    return {
+        "key": "approved",
+        "label": _EXECUTION_LABELS["approved"],
+        "state": _EXECUTION_STATES["approved"],
+        "detail": detail,
+    }
+
+
 def _default_detail(
     key: str,
     *,
@@ -146,6 +269,8 @@ def _default_detail(
     error: str | None,
 ) -> str:
     """The status line, derived from the run's own numbers."""
+    if key == "ready":
+        return "no run in this session — the guard is idle"
     if key == "executing":
         if reached and steps:
             return f"goal reached after {steps} simulator steps"
@@ -172,10 +297,13 @@ def brain_metadata(
     checks: list[dict] | None = None,
     steps: int | None = None,
     reached: bool | None = None,
+    executed: bool | None = None,
+    halted: str | None = None,
+    approved: bool | None = None,
     error: str | None = None,
     detail: str | None = None,
 ) -> dict:
-    """Display model for the Brain panel — one run's structured metadata.
+    """Display model for the Guard console — one run's structured metadata.
 
     Parameters
     ----------
@@ -192,6 +320,13 @@ def brain_metadata(
         ``harness.verify_plan()["checks"]`` — the four real check records.
     steps / reached:
         Simulator facts about the executed plan, when it was executed.
+    executed:
+        Whether the simulator applied the whole plan (``None`` when nothing ran).
+    halted:
+        ``"blocked"`` / ``"unknown"`` when the simulator stopped early.
+    approved:
+        Whether the execution gate sealed the plan (``None`` when it never got
+        that far).
     detail:
         Status line override; derived from the run's numbers when omitted.
     """
@@ -233,6 +368,9 @@ def brain_metadata(
         },
         "checks": check_records,
         "verified": all(entry["ok"] is True for entry in check_records),
+        "verification": _verification_verdict(check_records),
+        "simulation": _simulation_verdict(executed, halted),
+        "execution": _execution_verdict(approved, executed, reached),
         "steps": steps,
         "reached": reached,
     }
@@ -249,9 +387,12 @@ def run_metadata(
     latency: float | None,
     steps: int | None = None,
     reached: bool | None = None,
+    executed: bool | None = None,
+    halted: str | None = None,
+    approved: bool | None = None,
     error: str | None = None,
 ) -> dict:
-    """Brain metadata for a finished run: the verified plan and its checks.
+    """Guard metadata for a finished run: the verified plan and its checks.
 
     Reads only structured fields — the plan, the verifier's checks and the run
     numbers.  ``verification`` is ``engine.verify_run()``'s report when a plan
@@ -272,6 +413,9 @@ def run_metadata(
         checks=verification.get("checks"),
         steps=steps,
         reached=reached,
+        executed=executed,
+        halted=halted,
+        approved=approved,
         error=error,
     )
 
@@ -280,16 +424,31 @@ def run_metadata(
 # HTML
 # ---------------------------------------------------------------------------
 
-def _field(field_id: str, label: str, value: str, detail: str = "") -> str:
-    """One labelled metadata cell in the panel grid."""
+def _field(
+    field_id: str,
+    label: str,
+    value: str,
+    detail: str = "",
+    state: str = "neutral",
+) -> str:
+    """One labelled console cell: what it is, what it reads, why.
+
+    *state* colours the value the way the rest of the app colours a verdict
+    (success / error / running / thinking); a neutral value keeps the telemetry
+    colour, so a plain number never looks like a verdict.
+    """
     detail_html = (
         f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
         f"color:{C.TEXT_MUTED};letter-spacing:0.02em;word-break:break-all'>"
         f"{_e(detail)}</span>"
         if detail else ""
     )
+    colour = C.TELEMETRY_VALUE if state == "neutral" else _state_color(state)
     return (
-        f"<div data-field='{_e(field_id)}' style='display:flex;flex-direction:column;"
+        f"<div data-field='{_e(field_id)}' data-value='{_e(value)}' "
+        f"data-state='{_e(state)}' "
+        f"title='{_e(f'{label}: {value}' + (f' — {detail}' if detail else ''))}' "
+        f"style='display:flex;flex-direction:column;"
         f"gap:{S.px(S.XS)};padding:{S.px(S.SM)} {S.px(S.MD)};"
         f"background:{C.BG_SURFACE};border:1px solid {C.BORDER_SUBTLE};"
         f"border-radius:{S.px(S.RADIUS_MD)}'>"
@@ -297,7 +456,7 @@ def _field(field_id: str, label: str, value: str, detail: str = "") -> str:
         f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
         f"text-transform:uppercase'>{_e(label)}</span>"
         f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_BASE}px;"
-        f"color:{C.TELEMETRY_VALUE};letter-spacing:0.02em'>{_e(value)}</span>"
+        f"color:{colour};letter-spacing:0.02em'>{_e(value)}</span>"
         f"{detail_html}</div>"
     )
 
@@ -339,9 +498,12 @@ def brain_panel_html(meta: dict) -> str:
         f"</div>"
     )
 
+    verification = meta.get("verification", {})
+    simulation = meta.get("simulation", {})
+    execution = meta.get("execution", {})
     fields = (
         f"<div style='display:grid;"
-        f"grid-template-columns:repeat(auto-fit,minmax({S.px(148)},1fr));"
+        f"grid-template-columns:repeat(auto-fit,minmax({S.px(140)},1fr));"
         f"gap:{S.px(S.SM)}'>"
         + _field(
             "model",
@@ -350,23 +512,57 @@ def brain_panel_html(meta: dict) -> str:
             model.get("id") or "backend not resolved",
         )
         + _field("backend", "Backend", meta.get("backend", {}).get("label", "—"))
+        + _field("attempts", "Attempt", meta.get("attempts", {}).get("label", "—"))
+        + _field("plan", "Plan", meta.get("plan", {}).get("label", "—"))
+        + _field(
+            "verification",
+            "Verification",
+            verification.get("label", "—"),
+            verification.get("detail", ""),
+            state=verification.get("state", "neutral"),
+        )
+        + _field(
+            "simulation",
+            "Simulation",
+            simulation.get("label", "—"),
+            simulation.get("detail", ""),
+            state=simulation.get("state", "neutral"),
+        )
+        + _field(
+            "execution",
+            "Execution",
+            execution.get("label", "—"),
+            execution.get("detail", ""),
+            state=execution.get("state", "neutral"),
+        )
         + _field(
             "status",
             "Status",
             status.get("label", "—"),
             status.get("detail", ""),
         )
-        + _field("attempts", "Attempts", meta.get("attempts", {}).get("label", "—"))
         + _field("latency", "Latency", meta.get("latency", {}).get("label", "—"))
-        + _field("plan", "Plan", meta.get("plan", {}).get("label", "—"))
         + "</div>"
     )
 
-    verification = (
-        f"<div style='margin-top:{S.px(S.MD)}'>"
-        + DS.section_title("Verification")
-        + "".join(_check_row(check) for check in meta.get("checks", []))
-        + "</div>"
-    )
+    # A console that has not run anything shows no verdict rows at all: four
+    # unproven marks would read as four things the guard looked at.  The reader
+    # gets one line saying nothing has been evaluated instead.
+    if status.get("key") == "ready":
+        checks_block = (
+            f"<div style='margin-top:{S.px(S.MD)}'>"
+            + DS.section_title("Verification checks")
+            + f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
+            f"color:{C.TEXT_MUTED}'>– no check has been evaluated yet — "
+            "run a plan</div>"
+            + "</div>"
+        )
+    else:
+        checks_block = (
+            f"<div style='margin-top:{S.px(S.MD)}'>"
+            + DS.section_title("Verification checks")
+            + "".join(_check_row(check) for check in meta.get("checks", []))
+            + "</div>"
+        )
 
-    return DS.panel(header + fields + verification, title="Gemma Brain")
+    return DS.panel(header + fields + checks_block, title="GemmaBot Guard")

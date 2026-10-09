@@ -594,3 +594,86 @@ def test_dry_vision_asks_are_called_with_the_prompt_and_the_image(monkeypatch):
     assert "grid" in prompt.lower()
     assert image_bytes == b"abc"
     assert mime_type == "image/png"
+
+
+# ---------------------------------------------------------------------------
+# Execution gate and fail-safe configuration
+# ---------------------------------------------------------------------------
+
+def test_verified_actions_requires_a_present_non_empty_plan():
+    assert engine.verified_actions(None) is None
+    assert engine.verified_actions({}) is None
+    assert engine.verified_actions({"actions": []}) is None
+    assert engine.verified_actions({"actions": None}) is None
+    # Present, but never verified: still refused.
+    assert engine.verified_actions(
+        {"actions": SIMPLE_PLAN, "verification": None}
+    ) is None
+
+
+def test_verified_actions_refuses_a_plan_whose_verification_failed():
+    blocked = [{"cmd": "forward", "steps": 7}]
+    walled = {"robot": [0, 0], "dir": "E", "goal": [7, 0], "walls": [[2, 0]]}
+
+    refused = {
+        "actions": blocked,
+        "verification": engine.verify_run(walled, blocked, []),
+    }
+    assert refused["verification"]["ok"] is False
+    assert engine.verified_actions(refused) is None
+
+    accepted = {
+        "actions": SIMPLE_PLAN,
+        "verification": engine.verify_run(SIMPLE_WORLD, SIMPLE_PLAN, []),
+    }
+    assert accepted["verification"]["ok"] is True
+    assert engine.verified_actions(accepted) == SIMPLE_PLAN
+
+
+def test_run_plan_never_returns_actions_that_failed_verification():
+    """The gate's upstream contract: a rejected plan comes back as None."""
+    blocked = lambda instruction, world: _plan_reply(
+        [{"cmd": "forward", "steps": 7}]
+    )
+    result = engine.run_plan("go", new_world(), backend="dry", max_tries=3, ask=blocked)
+
+    assert result["actions"] is None
+    # The rejected plan's own four checks are still reported (never a pass).
+    assert result["verification"]["ok"] is False
+    assert result["error"]
+
+
+def test_a_configured_key_is_never_echoed_in_a_displayed_error(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "super-secret-value")
+
+    def boom(instruction, world):
+        raise RuntimeError("request with super-secret-value failed")
+
+    result = engine.run_plan("go", SIMPLE_WORLD, backend="api", max_tries=1, ask=boom)
+
+    assert result["actions"] is None
+    assert "super-secret-value" not in result["error"]
+    assert "<REDACTED>" in result["error"]
+
+
+def test_ask_vision_api_fails_readably_when_no_key_is_configured(monkeypatch):
+    from backend.vision import map_vision
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError) as excinfo:
+        map_vision.ask_vision_api("read the maze", b"\x89PNG", "image/png")
+
+    assert "GEMINI_API_KEY" in str(excinfo.value)
+    assert "Nothing was sent" in str(excinfo.value)
+
+
+def test_ask_api_fails_readably_when_no_key_is_configured(monkeypatch):
+    pytest.importorskip("google.genai")
+    pytest.importorskip("ollama")
+    from backend.planner import planner
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError) as excinfo:
+        planner.ask_api("go to the goal", new_world())
+
+    assert "GEMINI_API_KEY" in str(excinfo.value)

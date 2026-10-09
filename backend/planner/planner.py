@@ -1,29 +1,43 @@
 """AI planner that calls Gemma models to generate action plans.
 
 Owner: BACKEND
+
+This module is one *implementation* of ``backend.guard.planner.Planner``
+(Gemini / Ollama transports).  Parsing lives in ``backend.parsing``.
 """
-import json
-import re
+from backend.parsing import parse_plan_reply
 from google import genai
 from google.genai import types
 import ollama
 
-from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL, TEMPERATURE
+from gemmabot.config import (
+    GEMMA_API_MODEL,
+    OLLAMA_MODEL,
+    TEMPERATURE,
+    api_key,
+    missing_api_key_message,
+)
 from gemmabot.prompts import SYSTEM, world_prompt
 
 
 def parse_plan(text):
-    """Pull the JSON object out of a model reply (handles ``` fences)."""
-    text = re.sub(r"```(?:json)?", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("No JSON found in reply")
-    data = json.loads(text[start:end + 1])
-    return data.get("thought", ""), data.get("actions", [])
+    """Pull the JSON object out of a model reply (handles ``` fences).
+
+    Thin compatibility wrapper: the one implementation is
+    ``backend.parsing.parse_plan_reply``.
+    """
+    return parse_plan_reply(text)
 
 
 def ask_api(instruction, world, model=None):
-    """Call Gemini API with Gemma model."""
+    """Call Gemini API with Gemma model.
+
+    Fails before the client is constructed when no credential is configured,
+    so a missing key surfaces as a readable message instead of a network or
+    SDK error.
+    """
+    if not api_key():
+        raise RuntimeError(missing_api_key_message())
     if model is None:
         model = GEMMA_API_MODEL
     client = genai.Client()  # uses GEMINI_API_KEY

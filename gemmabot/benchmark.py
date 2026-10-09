@@ -35,7 +35,7 @@ from typing import Callable
 
 from gemmabot.simulator import new_world
 from backend.verifier.harness import plan_with_repair
-from backend.logger.logger import log_run
+from backend.logger.logger import log_run, redact_secrets
 
 # ---------------------------------------------------------------------------
 # Test cases
@@ -273,7 +273,7 @@ def run_benchmark(
                             max_tries=max_tries,
                         )
                     except Exception as exc:  # noqa: BLE001
-                        error_text = f"{type(exc).__name__}: {exc}"
+                        error_text = redact_secrets(f"{type(exc).__name__}: {exc}")
                         print(f"  ERROR: {error_text}")
                         attempts = max_tries
                         time.sleep(5)  # back off after unexpected errors

@@ -1,0 +1,10 @@
+# ── GemmaBot dev/test dependencies ────────────────────────────────────────
+# Install after the runtime requirements:
+#
+#     pip install -r requirements-dev.txt
+#
+# (This file includes requirements.txt, so the one command is enough.)
+
+-r requirements.txt
+
+pytest==9.1.1

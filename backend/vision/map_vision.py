@@ -29,14 +29,23 @@ ask_vision_ollama(prompt, image_bytes, mime_type) -> str
 from __future__ import annotations
 
 import json
-import re
 from collections import deque
 from typing import Any
+
+from backend.parsing import parse_world_reply
 
 # ---------------------------------------------------------------------------
 # Constants (mirrored from config / simulator so this module stands alone)
 # ---------------------------------------------------------------------------
-from gemmabot.config import SIZE, GEMMA_API_MODEL, OLLAMA_MODEL, TEMPERATURE
+from backend.logger.logger import redact_secrets
+from gemmabot.config import (
+    SIZE,
+    GEMMA_API_MODEL,
+    OLLAMA_MODEL,
+    TEMPERATURE,
+    api_key,
+    missing_api_key_message,
+)
 from gemmabot.simulator import DIRS
 
 
@@ -404,13 +413,10 @@ def build_map_prompt() -> str:
 def _parse_world_json(text: str) -> dict:
     """Extract a JSON object from *text*, stripping code fences if present.
 
-    Raises ValueError if no valid JSON object is found.
+    Thin wrapper: the one implementation is
+    ``backend.parsing.parse_world_reply``.
     """
-    text = re.sub(r"```(?:json)?", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("No JSON object found in model reply")
-    return json.loads(text[start:end + 1])
+    return parse_world_reply(text)
 
 
 def read_map(
@@ -450,7 +456,9 @@ def read_map(
         try:
             reply = ask_vision(prompt, image_bytes, mime_type)
         except Exception as exc:  # noqa: BLE001
-            feedback = f"ask_vision raised an error: {exc}"
+            # An SDK error can embed request details; scrub before this feedback
+            # reaches the history, the UI or a log.
+            feedback = redact_secrets(f"ask_vision raised an error: {exc}")
             print(f"  [map attempt {attempt}/{max_tries}] ask error — {feedback}")
             history.append({"attempt": attempt, "prompt": prompt,
                             "reply": reply, "ok": False, "feedback": feedback})
@@ -462,7 +470,7 @@ def read_map(
         try:
             world = _parse_world_json(reply)
         except Exception as exc:  # noqa: BLE001
-            feedback = f"could not parse reply as JSON: {exc}"
+            feedback = redact_secrets(f"could not parse reply as JSON: {exc}")
             print(f"  [map attempt {attempt}/{max_tries}] parse error — {feedback}")
             history.append({"attempt": attempt, "prompt": prompt,
                             "reply": reply, "ok": False, "feedback": feedback})
@@ -528,8 +536,12 @@ def ask_vision_api(
     Raises
     ------
     RuntimeError
-        If the google-genai SDK is unavailable or if the call fails.
+        If no API key is configured, the google-genai SDK is unavailable, or
+        the call fails.
     """
+    if not api_key():
+        raise RuntimeError(missing_api_key_message())
+
     try:
         from google import genai              # noqa: PLC0415
         from google.genai import types        # noqa: PLC0415

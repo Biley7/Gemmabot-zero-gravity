@@ -3,27 +3,49 @@
 Owner: FRONTEND.  No Streamlit import here — this module is pure Python and
 unit-testable.
 
+This is the UI-facing adapter over the **GemmaBot Guard**
+(``backend.guard``): it selects a planner backend, runs the guard's
+propose/verify/repair pipeline, and offers the approval-gated execution path.
+The guard owns the canonical representations, the parser and the safety
+invariant; this layer only selects, calls and packages real results.
+
 Responsibilities
 ----------------
-- pick the AI backend for text planning  (``ask_api`` / ``ask_ollama`` / auto)
+- pick the AI backend for text planning  (``GeminiPlanner`` / ``OllamaPlanner`` / auto)
 - pick the AI backend for map vision     (``ask_vision_api`` / ``ask_vision_ollama`` / auto)
-- run the verified planning loop         (``harness.plan_with_repair``)
-- execute accepted actions safely        (``simulator.step`` on a deep copy)
+- run the guard loop                     (``backend.guard.pipeline.plan``)
+- seal a verified plan                   (``backend.guard.pipeline.approve``)
+- execute an approved plan               (``execute_approved`` — re-verified)
+- simulate/replay any plan               (``simulate`` — demonstrations only)
 - check backend connectivity             (env var + ``ollama.list()``)
-
-The backend modules stay the source of truth: this layer only selects,
-calls, times and packages their real results.
 """
 from __future__ import annotations
 
 import copy
 import json
-import os
 import time
 from typing import Any, Callable
 
-from backend.verifier.harness import plan_with_repair, verify_plan
-from gemmabot.simulator import new_world, reached_goal, step
+from backend.guard import pipeline as guard
+from backend.guard.contracts import ApprovedPlan
+from backend.guard.planner import (
+    CallablePlanner,
+    CallableVisionPlanner,
+    build_planner,
+    build_vision_planner,
+)
+from backend.logger.logger import redact_secrets
+from gemmabot.config import has_api_key
+from gemmabot.simulator import new_world
+
+
+def _error_text(exc: BaseException) -> str:
+    """A readable failure reason with any configured secret scrubbed out.
+
+    An SDK error can embed the request, and therefore the key; the logger
+    redacts before writing, and the UI must redact before displaying.
+    """
+    return redact_secrets(f"{type(exc).__name__}: {exc}")
 
 AskFn = Callable[[str, dict], str]
 VisionAskFn = Callable[[str, bytes, str], str]
@@ -150,27 +172,24 @@ def _vision_functions() -> tuple[Callable, Callable]:
     return map_vision.ask_vision_api, map_vision.ask_vision_ollama
 
 
-def _make_auto_ask(api_fn: Callable | None, local_fn: Callable | None) -> AskFn:
-    """Build a text ask that tries the API, then falls back to local Ollama."""
-    if api_fn is None or local_fn is None:
-        default_api, default_local = _planner_functions()
-        api_fn = api_fn or default_api
-        local_fn = local_fn or default_local
+def _as_ask(planner: Any, requested: str) -> AskFn:
+    """Wrap a Planner as the ``ask(instruction, world) -> str`` callable.
 
-    state: dict[str, str | None] = {"used": None}
+    ``auto`` also exposes the planner object as ``backend_state`` so the UI
+    can report which backend actually answered (``FallbackPlanner.used``).
+    """
 
     def _ask(instruction: str, world: dict) -> str:
-        try:
-            reply = api_fn(instruction, world)
-            state["used"] = "api"
-            return reply
-        except Exception:  # noqa: BLE001 - any API failure falls back
-            reply = local_fn(instruction, world)
-            state["used"] = "ollama"
-            return reply
+        return planner.propose(instruction, world)
 
-    _ask.backend_state = state  # type: ignore[attr-defined]
+    if requested == "auto":
+        _ask.backend_state = planner  # type: ignore[attr-defined]
     return _ask
+
+
+def _make_auto_ask(api_fn: Callable | None, local_fn: Callable | None) -> AskFn:
+    """Back-compat name for the auto planner selection (guard fallback policy)."""
+    return get_ask("auto", api_fn=api_fn, local_fn=local_fn)
 
 
 def ask_auto(
@@ -180,7 +199,7 @@ def ask_auto(
     local_fn: Callable | None = None,
 ) -> str:
     """Try the Gemini API first; fall back to local Ollama on any exception."""
-    return _make_auto_ask(api_fn, local_fn)(instruction, world)
+    return get_ask("auto", api_fn=api_fn, local_fn=local_fn)(instruction, world)
 
 
 def get_ask(
@@ -190,18 +209,35 @@ def get_ask(
 ) -> AskFn:
     """Return the text-planning callable for *backend_name*.
 
-    ``api`` → robot_sim-equivalent ``ask_api``, ``local`` → ``ask_ollama``,
-    ``auto`` → API first then Ollama.  The optional ``api_fn`` / ``local_fn``
-    hooks exist for tests and never touch the network.
+    ``api`` → Gemini, ``local`` → Ollama, ``auto`` → API first then Ollama.
+    The fallback policy is one implementation
+    (``backend.guard.planner.FallbackPlanner``); the optional ``api_fn`` /
+    ``local_fn`` hooks exist for tests and never touch the network.
     """
     name = _normalise(backend_name)
-    if name == "api":
-        return api_fn or _planner_functions()[0]
-    if name == "local":
-        return local_fn or _planner_functions()[1]
     if name == DRY_BACKEND:
         return dry_ask()
-    return _make_auto_ask(api_fn, local_fn)
+
+    # An injected callable is returned as-is (its identity is the contract for
+    # tests and embedders); real transports are wrapped as planners.
+    if name == "api":
+        return (
+            api_fn
+            if api_fn is not None
+            else _as_ask(CallablePlanner("api", _planner_functions()[0]), name)
+        )
+    if name == "local":
+        return (
+            local_fn
+            if local_fn is not None
+            else _as_ask(CallablePlanner("ollama", _planner_functions()[1]), name)
+        )
+
+    if api_fn is None or local_fn is None:
+        default_api, default_local = _planner_functions()
+        api_fn = api_fn or default_api
+        local_fn = local_fn or default_local
+    return _as_ask(build_planner("auto", api_fn=api_fn, local_fn=local_fn), name)
 
 
 def _used_backend_label(requested: str, ask_fn: Callable) -> str:
@@ -213,8 +249,10 @@ def _used_backend_label(requested: str, ask_fn: Callable) -> str:
         return "ollama"
     if name == DRY_BACKEND:
         return DRY_BACKEND
-    state = getattr(ask_fn, "backend_state", None) or {}
-    return state.get("used") or "auto"
+    state = getattr(ask_fn, "backend_state", None)
+    if isinstance(state, dict):  # legacy/test shape
+        return state.get("used") or "auto"
+    return getattr(state, "used", None) or "auto"
 
 
 # Display name per backend label.  ``local`` is the UI alias of ``ollama``
@@ -275,29 +313,23 @@ def backend_model(backend: str) -> str | None:
 # Vision backend selection — deliberately separate from text planning
 # ---------------------------------------------------------------------------
 
+def _as_vision_ask(planner: Any, requested: str) -> VisionAskFn:
+    """Wrap a vision planner as ``ask(prompt, image_bytes, mime) -> str``."""
+
+    def _ask(prompt: str, image_bytes: bytes, mime_type: str) -> str:
+        return planner.read(prompt, image_bytes, mime_type)
+
+    if requested == "auto":
+        _ask.backend_state = planner  # type: ignore[attr-defined]
+    return _ask
+
+
 def _make_auto_vision_ask(
     api_fn: VisionAskFn | None,
     local_fn: VisionAskFn | None,
 ) -> VisionAskFn:
-    if api_fn is None or local_fn is None:
-        default_api, default_local = _vision_functions()
-        api_fn = api_fn or default_api
-        local_fn = local_fn or default_local
-
-    state: dict[str, str | None] = {"used": None}
-
-    def _ask(prompt: str, image_bytes: bytes, mime_type: str) -> str:
-        try:
-            reply = api_fn(prompt, image_bytes, mime_type)
-            state["used"] = "api"
-            return reply
-        except Exception:  # noqa: BLE001 - any API failure falls back
-            reply = local_fn(prompt, image_bytes, mime_type)
-            state["used"] = "ollama"
-            return reply
-
-    _ask.backend_state = state  # type: ignore[attr-defined]
-    return _ask
+    """Back-compat name for the auto vision planner selection."""
+    return get_vision_ask("auto", api_fn=api_fn, local_fn=local_fn)
 
 
 def get_vision_ask(
@@ -308,30 +340,43 @@ def get_vision_ask(
     """Return the *multimodal* ask callable for ``map_vision.read_map()``.
 
     This is intentionally not ``get_ask``: passing a text planner into the map
-    reader would send no image.
+    reader would send no image.  Like text planning, the fallback policy is
+    the guard's single implementation.
     """
     name = _normalise(backend_name)
-    if name == "api":
-        return api_fn or _vision_functions()[0]
-    if name == "local":
-        return local_fn or _vision_functions()[1]
     if name == DRY_BACKEND:
         return dry_vision_ask()
-    return _make_auto_vision_ask(api_fn, local_fn)
+
+    # Same identity contract as get_ask: an injected callable is returned as-is.
+    if name == "api":
+        return (
+            api_fn
+            if api_fn is not None
+            else _as_vision_ask(
+                CallableVisionPlanner("api", _vision_functions()[0]), name
+            )
+        )
+    if name == "local":
+        return (
+            local_fn
+            if local_fn is not None
+            else _as_vision_ask(
+                CallableVisionPlanner("ollama", _vision_functions()[1]), name
+            )
+        )
+
+    if api_fn is None or local_fn is None:
+        default_api, default_local = _vision_functions()
+        api_fn = api_fn or default_api
+        local_fn = local_fn or default_local
+    return _as_vision_ask(
+        build_vision_planner("auto", api_fn=api_fn, local_fn=local_fn), name
+    )
 
 
 # ---------------------------------------------------------------------------
-# Planning (propose → verify → repair)
+# Planning (propose → verify → repair → approve) — delegated to the guard
 # ---------------------------------------------------------------------------
-
-def _last_attempted_actions(history: list[dict]) -> list[dict] | None:
-    """The most recent parsed action list in a run's history, if there is one."""
-    for record in reversed(history or []):
-        candidate = record.get("actions")
-        if isinstance(candidate, list) and candidate:
-            return candidate
-    return None
-
 
 def verify_run(
     world: dict,
@@ -340,21 +385,11 @@ def verify_run(
 ) -> dict | None:
     """Structured verification of the plan a run produced — or last attempted.
 
-    Uses the accepted plan when there is one, otherwise the newest attempt that
-    got as far as a parsed action list.  Returns ``harness.verify_plan``'s
-    result extended with the ``actions`` it verified, or ``None`` when no
-    attempt produced anything runnable (an ask or parse failure) — in which
-    case there is nothing real to verify.
+    The implementation is ``backend.guard.pipeline.verify_run`` (one
+    canonical layer); this wrapper keeps the engine's public surface for
+    existing callers and tests.
     """
-    target = actions if isinstance(actions, list) and actions else None
-    if target is None:
-        target = _last_attempted_actions(history or [])
-    if not target:
-        return None
-
-    outcome = dict(verify_plan(world, target))
-    outcome["actions"] = target
-    return outcome
+    return guard.verify_run(world, actions, history)
 
 
 def run_plan(
@@ -365,10 +400,12 @@ def run_plan(
     ask: Callable | None = None,
     on_attempt: AttemptFn | None = None,
 ) -> dict:
-    """Run one instruction through ``harness.plan_with_repair``.
+    """Run one instruction through the GemmaBot Guard.
 
-    Never executes anything and never mutates *world*: the world is deep-copied
-    before it is handed to the harness, which itself only simulates copies.
+    Proposes with the selected planner, verifies with the harness, repairs up
+    to *max_tries* times, and seals a passing plan into an ``ApprovedPlan``.
+    Never executes anything and never mutates *world* (everything runs on deep
+    copies).
 
     Parameters
     ----------
@@ -380,43 +417,21 @@ def run_plan(
     -------
     dict
         ``{"actions", "attempts", "history", "latency", "backend", "error",
-        "verification"}``.  *actions* is the verified plan or ``None``;
-        *latency* is measured with ``time.perf_counter()``; *error* is the
-        readable failure reason; *verification* is ``verify_run()``'s
-        structured four-check report (or ``None`` when nothing was runnable).
+        "verification", "approved"}``.  *actions* is the verified plan or
+        ``None``; *latency* is measured inside the guard with
+        ``time.perf_counter()``; *verification* is the structured four-check
+        report (or ``None`` when nothing was runnable); *approved* is the
+        sealed ``ApprovedPlan`` the execution layer requires, or ``None``.
     """
     tries = max(1, int(max_tries))
     ask_fn = ask if ask is not None else get_ask(backend)
-    error: str | None = None
-    actions: list[dict] | None = None
-    attempts = 0
-    history: list[dict] = []
+    planner = CallablePlanner(_normalise(backend), ask_fn)
 
-    start = time.perf_counter()
-    try:
-        actions, attempts, history = plan_with_repair(
-            instruction,
-            copy.deepcopy(world),
-            ask_fn,
-            max_tries=tries,
-            on_attempt=on_attempt,
-        )
-    except Exception as exc:  # noqa: BLE001 - surfaced to the UI, never fatal
-        error = f"{type(exc).__name__}: {exc}"
-    latency = time.perf_counter() - start
-
-    if actions is None and error is None:
-        error = history[-1].get("feedback") if history else "planning produced no valid plan"
-
-    return {
-        "actions": actions,
-        "attempts": attempts,
-        "history": history,
-        "latency": latency,
-        "backend": _used_backend_label(backend, ask_fn),
-        "error": error,
-        "verification": verify_run(world, actions, history),
-    }
+    result = guard.plan(
+        instruction, world, planner, max_tries=tries, on_attempt=on_attempt
+    )
+    result["backend"] = _used_backend_label(backend, ask_fn)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -462,11 +477,14 @@ def run_map_vision(
     try:
         world, history = map_vision.read_map(image_bytes, mime_type, vision, max_tries=tries)
     except Exception as exc:  # noqa: BLE001 - surfaced to the UI, never fatal
-        error = f"{type(exc).__name__}: {exc}"
+        error = _error_text(exc)
     latency = time.perf_counter() - start
 
     if world is None and error is None:
-        error = history[-1].get("feedback") if history else "vision produced no valid world"
+        error = redact_secrets(
+            str(history[-1].get("feedback")) if history
+            else "vision produced no valid world"
+        )
 
     return {
         "world": world,
@@ -480,41 +498,88 @@ def run_map_vision(
 
 
 # ---------------------------------------------------------------------------
-# Execution (only ever called with a verified plan)
+# Execution gate
 # ---------------------------------------------------------------------------
+
+def verified_actions(result: dict[str, Any] | None) -> list[dict] | None:
+    """UI-side pre-check: a result that *looks* executable — present + verified.
+
+    This only answers "is there a plan worth approving?".  It is **not** the
+    execution gate: the authoritative gate is ``approve()`` (which re-runs
+    verification and seals the plan) plus ``execute_approved()`` (which
+    re-verifies and checks the approval digest).
+    """
+    if not isinstance(result, dict):
+        return None
+    actions = result.get("actions")
+    verification = result.get("verification")
+    if not isinstance(actions, list) or not actions:
+        return None
+    if not isinstance(verification, dict) or verification.get("ok") is not True:
+        return None
+    return actions
+
+
+# ---------------------------------------------------------------------------
+# Approval + execution (execution requires an ApprovedPlan)
+# ---------------------------------------------------------------------------
+
+def approve(
+    world: dict,
+    actions: list[dict] | None,
+    *,
+    instruction: str = "",
+    planner: str = "",
+) -> ApprovedPlan | None:
+    """Seal a verified plan — the only way to obtain an ``ApprovedPlan``.
+
+    Delegates to ``backend.guard.pipeline.approve``, which re-verifies
+    *actions* against *world* and returns ``None`` unless every check passes.
+    The returned object carries the world snapshot, the canonical actions and
+    a digest; execution re-checks all three, so a UI bug cannot mint an
+    approval or force an unverified plan to run.
+    """
+    return guard.approve(world, actions, instruction=instruction, planner=planner)
+
+
+def execute_approved(
+    approved: ApprovedPlan,
+    on_step: Callable[[dict, dict], None] | None = None,
+) -> dict:
+    """Execute an ``ApprovedPlan``; the guard re-verifies before stepping.
+
+    Returns an ``ExecutionResult``.  A refused approval returns ``ok=False``
+    with ``verified=False`` and an empty log — never a successful-looking
+    result.  The caller's world is never mutated.
+    """
+    return guard.execute(approved, on_step=on_step)
+
+
+def simulate(
+    world: dict,
+    actions: list[dict] | None,
+    on_step: Callable[[dict, dict], None] | None = None,
+) -> dict:
+    """Deterministic simulation of any plan — demonstrations and replays.
+
+    Marks the result ``verified=False``: this is **not** an approval gate.
+    Use :func:`approve` + :func:`execute_approved` for approved execution.
+    """
+    return guard.simulate(world, actions, on_step=on_step)
+
 
 def execute(
     world: dict,
     actions: list[dict],
     on_step: Callable[[dict, dict], None] | None = None,
 ) -> dict:
-    """Execute validated *actions* on a deep copy of *world*.
+    """Compatibility alias of :func:`simulate` — simulation, not approval.
 
-    The caller's world is never mutated; the returned dict carries the new
-    world so the UI decides when to adopt it.  Stops early if the simulator
-    blocks an action (returns ``ok=False``).
-
-    Parameters
-    ----------
-    on_step:
-        Optional callback ``on_step(entry, sim_world)`` invoked after every
-        step so a UI can render the world between actions.
+    Kept because the player and existing callers reach the simulator bridge by
+    this name.  It performs no approval and no re-verification; approved
+    execution is :func:`execute_approved`.
     """
-    sim = copy.deepcopy(world)
-    log: list[dict] = []
-    ok = True
-
-    for index, action in enumerate(actions or [], start=1):
-        message = step(sim, action)
-        entry = {"step": index, "action": action, "message": message}
-        log.append(entry)
-        if on_step is not None:
-            on_step(entry, sim)
-        if message.startswith("blocked") or message.startswith("unknown"):
-            ok = False
-            break
-
-    return {"world": sim, "log": log, "ok": ok, "reached": reached_goal(sim)}
+    return simulate(world, actions, on_step=on_step)
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +592,7 @@ def check_connections(ollama_client: Any | None = None) -> dict:
     ``ollama_client`` is injectable for tests; by default the real
     ``ollama.list()`` is used when the package and server are available.
     """
-    api_key_set = bool(os.getenv("GEMINI_API_KEY", "").strip())
+    api_key_set = has_api_key()
     ollama_reachable = False
     ollama_models: list[str] = []
 
