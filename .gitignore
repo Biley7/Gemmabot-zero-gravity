@@ -23,3 +23,5 @@ venv/
 # ── Run artefacts ──────────────────────────────────────────────────────────
 logs/
 logs/*.jsonl
+# Local dev-server scratch: .run/preview.log and one-off render probes.
+.run/

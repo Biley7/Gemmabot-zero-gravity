@@ -34,6 +34,7 @@ from backend.guard.contracts import (
 from backend.guard.pipeline import (
     approve,
     execute,
+    first_refusal,
     last_attempted_actions,
     plan,
     simulate,
@@ -80,6 +81,7 @@ __all__ = [
     "canonical_actions",
     "canonical_world",
     "execute",
+    "first_refusal",
     "last_attempted_actions",
     "plan",
     "register_planner",

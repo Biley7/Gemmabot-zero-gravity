@@ -120,6 +120,17 @@ h3 {{ font-size: {T.SIZE_MD}px !important; }}
     background-color: {C.ACCENT_BLUE_DIM} !important;
     border-color: {C.ACCENT_BLUE_DIM} !important;
 }}
+/* Disabled: a control that cannot be used must not look like it can.  Declared
+   last so it also wins for the primary button, which sets an accent fill. */
+.stButton button:disabled,
+.stButton button:disabled:hover {{
+    background-color: {C.BG_SURFACE} !important;
+    border-color: {C.BORDER_SUBTLE} !important;
+    color: {C.TEXT_MUTED} !important;
+    font-weight: {T.WEIGHT_NORMAL} !important;
+    opacity: 1 !important;
+    cursor: not-allowed !important;
+}}
 
 /* ── Text input ───────────────────────────────────────────────────────── */
 .stTextInput input {{
@@ -857,6 +868,17 @@ hr {{
 .gb-tl-row[data-state="blocked"] .gb-tl-msg {{ color: {C.ERROR}; }}
 .gb-tl-row[data-current="true"] {{ background: {C.RUNNING_BG}; }}
 .gb-tl-row[data-current="true"] .gb-tl-idx {{ color: {C.ACCENT_BLUE}; }}
+/* The action the execution player is showing right now.  Declared after the two
+   rules above on purpose: the specificity is identical, so source order is what
+   lets the live row win while the playhead is on it.  The player's bridge sets
+   and removes the attribute and never touches a row's state, so at rest the
+   timeline reads exactly as the backend rendered it. */
+.gb-tl-row[data-live="true"] {{
+    background: {C.RUNNING_BG};
+    border-left-color: {C.ACCENT_BLUE};
+}}
+.gb-tl-row[data-live="true"] .gb-tl-idx,
+.gb-tl-row[data-live="true"] .gb-tl-cmd {{ color: {C.ACCENT_BLUE}; }}
 
 /* ── Status strip ────────────────────────────────────────────────────────
    The four harness checks, in one line, with the verdict carried by the mark
@@ -886,6 +908,254 @@ hr {{
     content: "·";
     margin-left: {S.px(S.LG)};
     color: {C.BORDER_STRONG};
+}}
+
+/* ── Guard verification interface (frontend/console/guard.py) ────────────
+   The safety layer is the product, so it is the loudest thing in its panel:
+   a verdict banner, the seven stages one under the other, the six outcomes,
+   and — for a refused plan — the exact failure and its explanation.  The
+   model's own name is a muted footer.  Colour is carried by data attributes,
+   never by a class per verdict, so a state the interface can express always
+   has exactly one rule. */
+.gb-guard-head {{
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: {S.px(S.SM)};
+}}
+.gb-guard-purpose {{
+    font-family: {T.FONT_SANS};
+    font-size: {T.SIZE_SM}px;
+    color: {C.TEXT_SECONDARY};
+    line-height: {T.LEADING_BASE};
+}}
+.gb-guard-verdict {{
+    display: flex;
+    flex-direction: column;
+    gap: {S.px(S.XS)};
+    margin: {S.px(S.MD)} 0;
+    padding: {S.px(S.MD)};
+    background: {C.BG_ELEVATED};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_DEFAULT};
+    border-radius: {S.px(S.RADIUS_MD)};
+}}
+.gb-guard-verdict-label {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XL}px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: {T.TRACKING_WIDE};
+    line-height: {T.LEADING_TIGHT};
+    color: {C.TEXT_SECONDARY};
+}}
+.gb-guard-verdict-detail {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+}}
+.gb-guard-verdict[data-verdict="approved"] {{
+    background: {C.SUCCESS_BG};
+    border-color: {C.SUCCESS_BORDER};
+}}
+.gb-guard-verdict[data-verdict="approved"] .gb-guard-verdict-label {{ color: {C.SUCCESS}; }}
+.gb-guard-verdict[data-verdict="approved"] .gb-guard-verdict-detail {{ color: {C.SUCCESS}; }}
+.gb-guard-verdict[data-verdict="rejected"] {{
+    background: {C.ERROR_BG};
+    border-color: {C.ERROR_BORDER};
+}}
+.gb-guard-verdict[data-verdict="rejected"] .gb-guard-verdict-label {{ color: {C.ERROR}; }}
+.gb-guard-verdict[data-verdict="rejected"] .gb-guard-verdict-detail {{ color: {C.ERROR}; }}
+
+/* The seven stages: mark and label on one line, the verified fact under it,
+   and the state as a 2px edge — the same grammar as the pipeline. */
+.gb-guard-chain {{
+    display: flex;
+    flex-direction: column;
+    background: {C.BG_SURFACE};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+    border-radius: {S.px(S.RADIUS_MD)};
+    padding: {S.px(S.SM)} {S.px(S.MD)};
+}}
+.gb-guard-stage {{
+    display: grid;
+    grid-template-columns: {S.px(14)} 1fr;
+    gap: 0 {S.px(S.SM)};
+    padding: {S.px(S.XS)} 0 {S.px(S.XS)} {S.px(S.SM)};
+    border-left: 2px solid transparent;
+}}
+.gb-guard-mark {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_BASE}px;
+    line-height: {T.LEADING_TIGHT};
+    text-align: center;
+    color: {C.TEXT_MUTED};
+}}
+.gb-guard-stage-label {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    color: {C.TEXT_MUTED};
+}}
+.gb-guard-stage-detail {{
+    grid-column: 2;
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+.gb-guard-arrow {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    line-height: 1;
+    padding-left: {S.px(S.SM)};
+    color: {C.BORDER_STRONG};
+}}
+.gb-guard-stage[data-state="passed"] {{ border-left-color: {C.SUCCESS}; }}
+.gb-guard-stage[data-state="passed"] .gb-guard-mark,
+.gb-guard-stage[data-state="passed"] .gb-guard-stage-label {{ color: {C.SUCCESS}; }}
+.gb-guard-stage[data-state="passed"] .gb-guard-stage-detail {{ color: {C.TEXT_SECONDARY}; }}
+.gb-guard-stage[data-state="failed"] {{ border-left-color: {C.ERROR}; }}
+.gb-guard-stage[data-state="failed"] .gb-guard-mark,
+.gb-guard-stage[data-state="failed"] .gb-guard-stage-label {{ color: {C.ERROR}; }}
+.gb-guard-stage[data-state="failed"] .gb-guard-stage-detail {{ color: {C.ERROR}; }}
+.gb-guard-stage[data-state="running"] {{ border-left-color: {C.ACCENT_BLUE}; }}
+.gb-guard-stage[data-state="running"] .gb-guard-mark,
+.gb-guard-stage[data-state="running"] .gb-guard-stage-label {{ color: {C.RUNNING}; }}
+.gb-guard-stage[data-state="skipped"] {{ border-left-color: {C.BORDER_DEFAULT}; }}
+.gb-guard-stage[data-state="skipped"] .gb-guard-stage-label {{ color: {C.TEXT_SECONDARY}; }}
+
+/* The six outcomes, one line each.  The mark carries the verdict. */
+.gb-guard-checks {{ margin-top: {S.px(S.MD)}; }}
+.gb-guard-check {{
+    display: flex;
+    align-items: baseline;
+    gap: {S.px(S.SM)};
+    padding: {S.px(S.XS)} 0;
+    border-bottom: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+}}
+.gb-guard-check:last-child {{ border-bottom: none; }}
+.gb-guard-check .gb-guard-mark {{ width: {S.px(14)}; flex-shrink: 0; }}
+.gb-guard-check-label {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    letter-spacing: {T.TRACKING_WIDE};
+    color: {C.TEXT_SECONDARY};
+}}
+.gb-guard-check-detail {{
+    margin-left: auto;
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_MUTED};
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}}
+.gb-guard-check[data-ok="true"] .gb-guard-mark,
+.gb-guard-check[data-ok="true"] .gb-guard-check-label {{ color: {C.SUCCESS}; }}
+.gb-guard-check[data-ok="false"] .gb-guard-mark,
+.gb-guard-check[data-ok="false"] .gb-guard-check-label {{ color: {C.ERROR}; }}
+.gb-guard-check[data-ok="none"] .gb-guard-check-label {{ color: {C.TEXT_MUTED}; }}
+
+/* A refusal: ERROR, ACTION, ATTEMPT and the repair that followed. */
+.gb-guard-reject {{
+    margin-top: {S.px(S.MD)};
+    padding: {S.px(S.MD)};
+    background: {C.ERROR_BG};
+    border: {S.BORDER_WIDTH}px solid {C.ERROR_BORDER};
+    border-radius: {S.px(S.RADIUS_MD)};
+}}
+.gb-guard-reject-head {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_BASE}px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: {T.TRACKING_WIDE};
+    color: {C.ERROR};
+}}
+.gb-guard-reject-fact {{
+    margin-top: {S.px(S.SM)};
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_SECONDARY};
+    line-height: {T.LEADING_BASE};
+}}
+.gb-guard-reject-row {{
+    display: flex;
+    align-items: baseline;
+    gap: {S.px(S.SM)};
+    margin-top: {S.px(S.XS)};
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+}}
+.gb-guard-reject-label {{
+    min-width: {S.px(52)};
+    letter-spacing: {T.TRACKING_WIDE};
+    color: {C.TEXT_MUTED};
+}}
+.gb-guard-reject-value {{ color: {C.TEXT_PRIMARY}; }}
+.gb-guard-repair {{
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: {S.px(S.SM)};
+    padding-top: {S.px(S.SM)};
+    border-top: {S.BORDER_WIDTH}px dashed {C.ERROR_BORDER};
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    letter-spacing: {T.TRACKING_WIDE};
+    color: {C.WARNING};
+}}
+.gb-guard-repair-detail {{ color: {C.TEXT_SECONDARY}; letter-spacing: {T.TRACKING_NORMAL}; }}
+.gb-guard-repair[data-repair="verified"] {{ color: {C.SUCCESS}; }}
+
+/* "Why was this rejected?" — a fold the reader opens, no script needed. */
+.gb-guard-why {{
+    margin-top: {S.px(S.SM)};
+    padding-top: {S.px(S.SM)};
+    border-top: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+}}
+.gb-guard-why-summary {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    letter-spacing: {T.TRACKING_WIDE};
+    text-transform: uppercase;
+    color: {C.TEXT_SECONDARY};
+    cursor: pointer;
+}}
+.gb-guard-why-summary:hover {{ color: {C.TEXT_PRIMARY}; }}
+.gb-guard-why-body {{
+    display: flex;
+    flex-direction: column;
+    gap: {S.px(S.XS)};
+    padding: {S.px(S.SM)} 0 0 {S.px(S.MD)};
+}}
+.gb-guard-why-line {{
+    font-family: {T.FONT_SANS};
+    font-size: {T.SIZE_SM}px;
+    line-height: {T.LEADING_BASE};
+    color: {C.TEXT_SECONDARY};
+}}
+
+/* The model and the run numbers: the quietest row in the panel. */
+.gb-guard-meta {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: {S.px(S.XS)} {S.px(S.SM)};
+    margin-top: {S.px(S.MD)};
+    padding-top: {S.px(S.MD)};
+    border-top: {S.BORDER_WIDTH}px solid {C.BORDER_SUBTLE};
+}}
+.gb-guard-meta-item {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    letter-spacing: 0.02em;
+    color: {C.TEXT_MUTED};
+}}
+.gb-guard-meta-value {{ color: {C.TELEMETRY_VALUE}; }}
+
+@media (max-width: 1100px) {{
+    .gb-guard-verdict-label {{ font-size: {T.SIZE_LG}px; }}
 }}
 
 /* ── Console command block ───────────────────────────────────────────────

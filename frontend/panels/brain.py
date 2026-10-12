@@ -6,35 +6,41 @@ What the console shows
 ----------------------
 Only facts a run actually produced: which backend answered, the model id
 ``gemmabot.config`` holds for it, how many attempts the repair loop made, the
-measured latency, the size of the plan, the verdicts the run reached
-(VERIFICATION · SIMULATION · EXECUTION) and the four checks
+measured latency, the size of the plan and the four checks
 ``backend.verifier.harness.verify_plan`` evaluated.  Model reasoning is
 deliberately absent: the console renders metadata, never a transcript, so there
 is no chain of thought in it.
 
+Each check is carried with the structured facts the verifier recorded behind it
+(``data``: the action index it refused, the command, the cell it refused to
+enter) so the interface can name a failure without quoting anything a model
+wrote.  ``refusal`` carries the same thing for the *first attempt the guard
+refused*, which is what makes ATTEMPT and REPAIR truthful on a run that was
+repaired and then approved.
+
 Two rules the console never breaks:
 
-* a check that was never proven (``ok is None``) is drawn as "–" with the
-  reason it is unproven — an unproven check is never shown as a pass;
+* a check that was never proven (``ok is None``) stays unproven — an unproven
+  check is never shown as a pass;
 * a verdict nothing produced is drawn as "—" — SIMULATION without a timeline
   is *not run*, not *passed*.
+
+The interface the console is read through — the verdict, the seven-stage chain,
+the six outcomes, a refusal and its explanation — is
+``frontend.console.guard``; this module is the display model behind it.
 
 Public surface
 --------------
 brain_metadata(...)        -> dict   display model for one run
-brain_panel_html(meta)     -> str    the console, built from design-system parts
+run_metadata(...)          -> dict   the same, from a finished loop run
+brain_panel_html(meta)     -> str    the GemmaBot Guard interface
 model_family(model_id)     -> str    "gemma-4-26b-a4b-it" -> "Gemma 4"
+attempt_status(record, n)  -> tuple  the loop state one attempt record moves to
 """
 from __future__ import annotations
 
-from typing import Any
-
 from backend.verifier.harness import VERIFICATION_CHECKS
-from frontend.components import components as DS
-from frontend.components import colors as C
-from frontend.components import spacing as S
-from frontend.components import typography as T
-from frontend.components.blocks import escape as _e, state_color as _state_color
+from frontend.console import guard as guard_console
 
 # The loop states the console reports.  They are not invented: the app moves
 # through them from real events (an attempt in flight, an attempt that failed
@@ -54,14 +60,6 @@ STATUS_STATES: dict[str, str] = {
     "thinking": "thinking",
     "repairing": "warning",
     "executing": "running",
-}
-
-# Check marks: True / False / unproven (None).
-_MARKS: dict[Any, str] = {True: "✓", False: "✗", None: "–"}
-_MARK_COLORS: dict[Any, str] = {
-    True: C.SUCCESS,
-    False: C.ERROR,
-    None: C.TEXT_MUTED,
 }
 
 # Verdict vocabulary for the three console rows.  A verdict is only ever
@@ -164,8 +162,32 @@ def _normalise_checks(checks: list[dict] | None) -> list[dict]:
             "label": label,
             "ok": ok,
             "detail": str(entry.get("detail") or "not evaluated"),
+            # The structured facts behind a failing check: the action index, the
+            # command and the cell.  Carried through so the interface can name a
+            # refusal from data rather than from a detail string, which can quote
+            # whatever a model put in an action dict.
+            "data": entry.get("data") if isinstance(entry.get("data"), dict) else {},
         })
     return out
+
+
+def _normalise_refusal(refusal: dict | None) -> dict | None:
+    """The first refused attempt as a display record, or ``None``.
+
+    *refusal* arrives from the guard as ``{"attempt": int, "verification":
+    verify_plan(...)}`` — a number and the verifier's own records, never a
+    prompt or a reply.  The checks are normalised exactly like the run's own, so
+    a refusal and a verdict are read the same way.
+    """
+    if not isinstance(refusal, dict):
+        return None
+    checks = _normalise_checks((refusal.get("verification") or {}).get("checks"))
+    if all(entry["ok"] is not False for entry in checks):
+        return None
+    return {
+        "attempt": max(int(refusal.get("attempt") or 1), 1),
+        "checks": checks,
+    }
 
 
 def _verification_verdict(checks: list[dict]) -> dict:
@@ -301,6 +323,7 @@ def brain_metadata(
     halted: str | None = None,
     approved: bool | None = None,
     error: str | None = None,
+    refusal: dict | None = None,
     detail: str | None = None,
 ) -> dict:
     """Display model for the Guard console — one run's structured metadata.
@@ -327,6 +350,12 @@ def brain_metadata(
     approved:
         Whether the execution gate sealed the plan (``None`` when it never got
         that far).
+    refusal:
+        ``engine.first_refusal()`` — the first attempt the verifier refused,
+        re-verified: ``{"attempt", "verification"}``.  Structured facts only (a
+        number and the verifier's records), which is what lets the interface
+        report a refusal without a transcript.  ``None`` when nothing was
+        refused, including a run that passed first time.
     detail:
         Status line override; derived from the run's numbers when omitted.
     """
@@ -367,12 +396,20 @@ def brain_metadata(
             "label": "—" if count is None else _count(count, "action"),
         },
         "checks": check_records,
+        "refusal": _normalise_refusal(refusal),
         "verified": all(entry["ok"] is True for entry in check_records),
         "verification": _verification_verdict(check_records),
         "simulation": _simulation_verdict(executed, halted),
         "execution": _execution_verdict(approved, executed, reached),
+        # The tri-states the three verdicts above are derived from, kept as the
+        # run reported them: the guard interface reads these rather than
+        # re-deriving them from prose, so a shared "—" can never be mistaken for
+        # a measurement.  (None = nothing produced it.)
         "steps": steps,
         "reached": reached,
+        "executed": executed,
+        "halted": halted,
+        "approved": approved,
     }
 
 
@@ -391,6 +428,7 @@ def run_metadata(
     halted: str | None = None,
     approved: bool | None = None,
     error: str | None = None,
+    refusal: dict | None = None,
 ) -> dict:
     """Guard metadata for a finished run: the verified plan and its checks.
 
@@ -399,6 +437,10 @@ def run_metadata(
     was verified, and ``None`` when nothing runnable came out of the loop (the
     four checks then stay unproven).  A run that produced no plan is still
     ``repairing``: the loop ended while repairing.
+
+    ``refusal`` is ``engine.first_refusal()``'s record for the first attempt the
+    guard refused, or ``None``; like every other input here it holds a plan and
+    a verdict, never a prompt or a reply.
     """
     verification = verification or {}
     plan = verification.get("actions") or actions
@@ -417,152 +459,21 @@ def run_metadata(
         halted=halted,
         approved=approved,
         error=error,
+        refusal=refusal,
     )
 
 
 # ---------------------------------------------------------------------------
-# HTML
+# HTML — the panel is the guard interface
 # ---------------------------------------------------------------------------
-
-def _field(
-    field_id: str,
-    label: str,
-    value: str,
-    detail: str = "",
-    state: str = "neutral",
-) -> str:
-    """One labelled console cell: what it is, what it reads, why.
-
-    *state* colours the value the way the rest of the app colours a verdict
-    (success / error / running / thinking); a neutral value keeps the telemetry
-    colour, so a plain number never looks like a verdict.
-    """
-    detail_html = (
-        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-        f"color:{C.TEXT_MUTED};letter-spacing:0.02em;word-break:break-all'>"
-        f"{_e(detail)}</span>"
-        if detail else ""
-    )
-    colour = C.TELEMETRY_VALUE if state == "neutral" else _state_color(state)
-    return (
-        f"<div data-field='{_e(field_id)}' data-value='{_e(value)}' "
-        f"data-state='{_e(state)}' "
-        f"title='{_e(f'{label}: {value}' + (f' — {detail}' if detail else ''))}' "
-        f"style='display:flex;flex-direction:column;"
-        f"gap:{S.px(S.XS)};padding:{S.px(S.SM)} {S.px(S.MD)};"
-        f"background:{C.BG_SURFACE};border:1px solid {C.BORDER_SUBTLE};"
-        f"border-radius:{S.px(S.RADIUS_MD)}'>"
-        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-        f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-        f"text-transform:uppercase'>{_e(label)}</span>"
-        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_BASE}px;"
-        f"color:{colour};letter-spacing:0.02em'>{_e(value)}</span>"
-        f"{detail_html}</div>"
-    )
-
-
-def _check_row(check: dict) -> str:
-    """One verification row: mark, label, and the fact behind the verdict."""
-    ok = check.get("ok")
-    return (
-        f"<div data-check='{_e(check.get('id', ''))}' "
-        f"data-ok='{str(ok).lower()}' "
-        f"style='display:flex;align-items:baseline;gap:{S.px(S.SM)};"
-        f"padding:{S.px(S.XS)} 0;border-bottom:1px solid {C.BORDER_SUBTLE}'>"
-        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_BASE}px;"
-        f"color:{_MARK_COLORS[ok]};flex-shrink:0;width:{S.px(S.MD)};"
-        f"text-align:center'>{_MARKS[ok]}</span>"
-        f"<span style='font-family:{T.FONT_SANS};font-size:{T.SIZE_BASE}px;"
-        f"color:{C.TEXT_PRIMARY}'>{_e(check.get('label', ''))}</span>"
-        f"<span style='margin-left:auto;font-family:{T.FONT_MONO};"
-        f"font-size:{T.SIZE_XS}px;color:{C.TEXT_MUTED};text-align:right'>"
-        f"{_e(check.get('detail', ''))}</span>"
-        f"</div>"
-    )
-
 
 def brain_panel_html(meta: dict) -> str:
-    """Render *meta* (from :func:`brain_metadata`) as the Gemma Brain panel.
+    """Render *meta* (from :func:`brain_metadata`) as the GemmaBot Guard panel.
 
-    Structured metadata only — no prompt, no reply, no reasoning.
+    The interface — the verdict, the seven-stage chain, the six outcomes, a
+    refusal and its explanation, and the muted metadata footer — lives in
+    ``frontend.console.guard``, next to the rest of the console's vocabulary.
+    This panel supplies the display model and nothing else, which is what keeps
+    structured facts the only input: a run's transcript cannot reach the markup.
     """
-    status = meta.get("status", {})
-    model = meta.get("model", {})
-    header = (
-        f"<div style='display:flex;align-items:center;justify-content:space-between;"
-        f"gap:{S.px(S.SM)};flex-wrap:wrap;margin-bottom:{S.px(S.MD)}'>"
-        f"{DS.status_chip(status.get('label', '—'), status.get('state', 'neutral'))}"
-        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
-        f"color:{C.TEXT_MUTED};letter-spacing:{T.TRACKING_WIDE};"
-        f"text-transform:uppercase'>structured metadata · no chain of thought</span>"
-        f"</div>"
-    )
-
-    verification = meta.get("verification", {})
-    simulation = meta.get("simulation", {})
-    execution = meta.get("execution", {})
-    fields = (
-        f"<div style='display:grid;"
-        f"grid-template-columns:repeat(auto-fit,minmax({S.px(140)},1fr));"
-        f"gap:{S.px(S.SM)}'>"
-        + _field(
-            "model",
-            "Model",
-            model.get("family", "—"),
-            model.get("id") or "backend not resolved",
-        )
-        + _field("backend", "Backend", meta.get("backend", {}).get("label", "—"))
-        + _field("attempts", "Attempt", meta.get("attempts", {}).get("label", "—"))
-        + _field("plan", "Plan", meta.get("plan", {}).get("label", "—"))
-        + _field(
-            "verification",
-            "Verification",
-            verification.get("label", "—"),
-            verification.get("detail", ""),
-            state=verification.get("state", "neutral"),
-        )
-        + _field(
-            "simulation",
-            "Simulation",
-            simulation.get("label", "—"),
-            simulation.get("detail", ""),
-            state=simulation.get("state", "neutral"),
-        )
-        + _field(
-            "execution",
-            "Execution",
-            execution.get("label", "—"),
-            execution.get("detail", ""),
-            state=execution.get("state", "neutral"),
-        )
-        + _field(
-            "status",
-            "Status",
-            status.get("label", "—"),
-            status.get("detail", ""),
-        )
-        + _field("latency", "Latency", meta.get("latency", {}).get("label", "—"))
-        + "</div>"
-    )
-
-    # A console that has not run anything shows no verdict rows at all: four
-    # unproven marks would read as four things the guard looked at.  The reader
-    # gets one line saying nothing has been evaluated instead.
-    if status.get("key") == "ready":
-        checks_block = (
-            f"<div style='margin-top:{S.px(S.MD)}'>"
-            + DS.section_title("Verification checks")
-            + f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
-            f"color:{C.TEXT_MUTED}'>– no check has been evaluated yet — "
-            "run a plan</div>"
-            + "</div>"
-        )
-    else:
-        checks_block = (
-            f"<div style='margin-top:{S.px(S.MD)}'>"
-            + DS.section_title("Verification checks")
-            + "".join(_check_row(check) for check in meta.get("checks", []))
-            + "</div>"
-        )
-
-    return DS.panel(header + fields + checks_block, title="GemmaBot Guard")
+    return guard_console.panel_html(meta)

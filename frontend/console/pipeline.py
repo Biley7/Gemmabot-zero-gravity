@@ -349,11 +349,19 @@ def timeline_rows(
     return rows
 
 
-def timeline_html(rows: list[dict]) -> str:
-    """The action timeline: numbered, monospace, with the current row marked."""
+def timeline_html(rows: list[dict], *, scope: str | None = None) -> str:
+    """The action timeline: numbered, monospace, with the current row marked.
+
+    ``scope`` names this timeline for the execution player
+    (``player_view.player_html(..., timeline_scope=...)``), which marks the
+    action it is *showing right now* with ``data-live``.  Without it the
+    timeline carries no ``data-timeline`` attribute, so no player can reach it —
+    which is what the screens that render a player but no console timeline want.
+    """
+    scope_attr = f" data-timeline='{_e(scope)}'" if scope else ""
     if not rows:
         return (
-            "<div class='gb-tl'>"
+            f"<div class='gb-tl'{scope_attr}>"
             "<div class='gb-tl-row' data-state='pending'>"
             "<span class='gb-tl-idx'>--</span>"
             "<span class='gb-tl-cmd'>no actions</span>"
@@ -376,4 +384,4 @@ def timeline_html(rows: list[dict]) -> str:
             f"<span class='gb-tl-msg'>{_e(row.get('message', ''))}</span>"
             f"</div>"
         )
-    return f"<div class='gb-tl' data-actions='{len(rows)}'>{''.join(body)}</div>"
+    return f"<div class='gb-tl'{scope_attr} data-actions='{len(rows)}'>{''.join(body)}</div>"

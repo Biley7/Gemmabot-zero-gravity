@@ -12,6 +12,7 @@ import re
 import engine
 from backend.verifier.harness import plan_with_repair
 from frontend.components import colors as C
+from frontend.console import guard as guard_console
 from frontend.panels import safety
 from gemmabot.simulator import new_world
 
@@ -214,7 +215,8 @@ def test_facts_rows_are_the_four_requested_readouts():
     assert by_id["collision"]["value"] == "[3, 0]"
     assert by_id["collision"]["state"] == "error"
     assert by_id["repair"]["value"] == "1 repair"
-    assert by_id["success"]["value"] == "✓ Safe"
+    # A repaired plan that then passed reads in the guard's own words.
+    assert by_id["success"]["value"] == "✓ REPAIRED PLAN VERIFIED"
     assert by_id["success"]["state"] == "success"
 
 
@@ -227,6 +229,8 @@ def test_facts_rows_stay_honest_when_nothing_failed():
     assert by_id["collision"]["state"] == "success"
     assert by_id["repair"]["value"] == "no repair"
     assert by_id["error"]["value"] == "none"
+    # Nothing was repaired because nothing had to be.
+    assert by_id["success"]["value"] == "✓ VALID PLAN"
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +311,7 @@ def test_report_renders_pipeline_timeline_facts_and_events():
     stages = safety.stages(new_world(), _dry_history())
     html = safety.report_html(stages, safety.summary(stages))
 
-    assert "Safety lab" in html
+    assert guard_console.PRODUCT in html
     assert "gb-panel" in html
     for kind in safety.PIPELINE:
         assert kind in html

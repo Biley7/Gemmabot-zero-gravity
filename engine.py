@@ -7,6 +7,7 @@ from frontend.panels.engine import (  # noqa: F401
     run_plan,
     run_map_vision,
     verify_run,
+    first_refusal,
     verified_actions,
     approve,
     execute,

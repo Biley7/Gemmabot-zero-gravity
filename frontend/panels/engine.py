@@ -392,6 +392,20 @@ def verify_run(
     return guard.verify_run(world, actions, history)
 
 
+def first_refusal(
+    world: dict,
+    history: list[dict] | None,
+) -> dict | None:
+    """The first attempt the guard refused, re-verified on its plan alone.
+
+    The implementation is ``backend.guard.pipeline.first_refusal`` (one
+    canonical layer); this wrapper is the UI's door to it.  Returns
+    ``{"attempt", "verification"}`` — structured facts a panel can turn into
+    ERROR / ACTION / ATTEMPT without ever holding a prompt or a reply.
+    """
+    return guard.first_refusal(world, history)
+
+
 def run_plan(
     instruction: str,
     world: dict,

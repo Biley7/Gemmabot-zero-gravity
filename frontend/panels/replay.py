@@ -261,7 +261,7 @@ def timeline(record: dict, plan: dict) -> dict | None:
     actions = plan.get("actions")
     if not _is_action_list(actions):
         return None
-    return playback.build_timeline(world, actions)
+    return playback.build_timeline(world, actions, kind=playback.KIND_REPLAY)
 
 
 # ---------------------------------------------------------------------------

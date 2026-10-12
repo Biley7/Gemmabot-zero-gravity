@@ -185,15 +185,95 @@ def test_run_plan_shows_the_gemma_brain_metadata(monkeypatch):
     assert [entry["ok"] for entry in meta["checks"]] == [True] * 4
     assert meta["verified"] is True
 
+    # One Guard panel for the run — selected by its own stage markup, since the
+    # Safety Lab names the layer too.
     panels = [
-        element.value for element in at.markdown if "GemmaBot Guard" in element.value
+        element.value for element in at.markdown if "data-guard-stage='" in element.value
     ]
-    assert len(panels) == 1, "expected exactly one Guard console"
+    assert len(panels) == 1, "expected exactly one Guard panel"
     panel = panels[0]
-    assert panel.count("data-ok='true'") == 4
+    assert "GemmaBot Guard" in panel
+    # The seven stages ran, the banner approves, and the six outcomes are all
+    # proven: the four checks plus SIMULATION PASSED and EXECUTION APPROVED.
+    assert panel.count("data-guard-stage='") == 7
+    assert "data-guard-stage='verdict' data-state='passed'" in panel
+    assert "data-verdict='approved'" in panel
+    assert panel.count("data-ok='true'") == 6
+    assert "PLAN REJECTED" not in panel
     # The panel is structured metadata: the model's reasoning is not in it.
     assert REASONING not in panel
     assert "Model reply" not in panel
+    assert "prompt" not in panel.lower()
+
+
+def test_a_repaired_run_reads_as_a_refusal_a_repair_and_an_approval(monkeypatch):
+    """The guard panel reports the first refusal and the repair that fixed it.
+
+    Attempt 1 walks into the wall column and is refused; attempt 2 is the
+    verified route.  ATTEMPT and REPAIR are read off the guard's own
+    re-verification of attempt 1's plan, never off the model's reply.
+    """
+    import engine
+
+    hazard = [{"cmd": "forward", "steps": 7}]
+
+    def fake_run_plan(
+        instruction, world, backend="api", max_tries=3, ask=None, on_attempt=None
+    ):
+        history = [
+            {
+                "attempt": 1,
+                "prompt": instruction,
+                "reply": json.dumps({"thought": REASONING, "actions": hazard}),
+                "actions": hazard,
+                "ok": False,
+                "feedback": "blocked at [2, 0]",
+            },
+            {
+                "attempt": 2,
+                "prompt": instruction,
+                "reply": json.dumps({"thought": REASONING, "actions": DEFAULT_WORLD_PLAN}),
+                "actions": DEFAULT_WORLD_PLAN,
+                "ok": True,
+                "feedback": "ok",
+            },
+        ]
+        if on_attempt is not None:
+            for record in history:
+                on_attempt(record)
+        return {
+            "actions": DEFAULT_WORLD_PLAN,
+            "attempts": 2,
+            "history": history,
+            "latency": 2.0,
+            "backend": "api",
+            "error": None,
+            "verification": engine.verify_run(world, DEFAULT_WORLD_PLAN, history),
+        }
+
+    monkeypatch.setattr(engine, "run_plan", fake_run_plan)
+
+    at = _run_app()
+    _button(at, "Run plan").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    meta = at.session_state["text_result"]["brain"]
+    assert meta["refusal"]["attempt"] == 1
+    assert meta["verified"] is True
+
+    panel = next(
+        element.value for element in at.markdown if "GemmaBot Guard" in element.value
+    )
+    # The refusal, named from the verifier's own records…
+    assert "data-field='error' data-value='Collision at (3, 0)'" in panel
+    assert "data-field='action' data-value='FORWARD ×7'" in panel
+    assert "data-field='attempt' data-value='1 / 3'" in panel
+    assert "REPAIRED PLAN VERIFIED" in panel
+    # …and the approval that followed it.
+    assert "data-verdict='approved'" in panel
+    assert "data-guard-stage='collision' data-state='passed'" in panel
+    assert "data-guard-stage='verdict' data-state='passed'" in panel
+    assert REASONING not in panel
 
 
 def test_safety_lab_dry_run_builds_the_verifier_and_repair_timeline():
@@ -225,7 +305,7 @@ def test_safety_lab_dry_run_builds_the_verifier_and_repair_timeline():
     assert at.session_state["last_run"]["source"] == "safety"
 
     rendered = "\n".join(element.value for element in at.markdown)
-    assert "Safety lab" in rendered
+    assert "GemmaBot Guard" in rendered
     assert rendered.count("gb-safety-chip") == 5
     assert rendered.count("gb-safety-fact") == 4
     assert "data-cell='[3, 0]'" in rendered
@@ -279,8 +359,12 @@ def test_run_plan_failure_renders_reason_and_does_not_move_robot(monkeypatch):
     panel = next(
         element.value for element in at.markdown if "GemmaBot Guard" in element.value
     )
-    assert panel.count("data-ok='none'") == 4
+    # Nothing was proven, so nothing is drawn as one: six unproven outcomes, a
+    # NOT EVALUATED banner and not a single tick in the chain.
+    assert panel.count("data-ok='none'") == 6
     assert "data-ok='true'" not in panel
+    assert "data-verdict='pending'" in panel
+    assert "✓" not in panel
 
 
 def test_vision_lab_reads_a_map_validates_it_and_loads_it_into_the_simulator():

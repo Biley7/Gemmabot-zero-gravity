@@ -17,6 +17,8 @@ Separation of concerns
 * validation   ``backend.verifier.harness.verify_plan``
 * simulation   ``simulate()`` below (the simulator's own step loop)
 * repair       ``backend.verifier.harness.plan_with_repair`` (bounded)
+* refusal      ``first_refusal()`` below (the first plan the verifier refused,
+  re-verified so a UI can explain it without a transcript)
 * execution    ``execute()`` below (approval required, re-verified)
 * logging      ``backend.logger`` (callers log; the guard only returns facts)
 
@@ -89,6 +91,37 @@ def verify_run(
     outcome = dict(verify_plan(world, target))
     outcome["actions"] = target
     return outcome
+
+
+def first_refusal(world: dict, history: list[dict] | None) -> dict | None:
+    """The first attempt the guard refused, re-verified on its plan alone.
+
+    Returns ``{"attempt": int, "verification": verify_plan(...)}`` for the first
+    attempt whose plan the verifier refused, or ``None`` when nothing was
+    refused (or no attempt produced a plan to check).
+
+    Re-verifying is deterministic and cheap, and it is deliberate: the same
+    ``verify_plan`` the loop used answers the question, so a UI explaining a
+    refusal cannot disagree with the verdict that caused it.  Only the attempt
+    number, the verdict and the plan are read — never the prompt or the model's
+    reply — so a caller can report a refusal without holding a transcript.
+    """
+    for record in history or []:
+        if not isinstance(record, dict) or record.get("ok") is not False:
+            continue
+        plan = record.get("actions")
+        if not isinstance(plan, list) or not plan:
+            continue
+        result = verify_plan(world, plan)
+        if result.get("ok") is True:
+            # The record and the verifier disagree: report nothing rather than
+            # invent a refusal the verifier does not support.
+            continue
+        return {
+            "attempt": max(int(record.get("attempt") or 1), 1),
+            "verification": result,
+        }
+    return None
 
 
 # ---------------------------------------------------------------------------

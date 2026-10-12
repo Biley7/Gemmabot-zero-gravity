@@ -18,11 +18,15 @@ The Execute stage is animated by ``frontend.simulation.player`` (the
 simulator's own timeline) and drawn by ``player_view`` — the player only
 replays those steps, it never re-simulates or re-times them.
 
-The GemmaBot Guard console (``frontend.panels.brain``) reports the run's
-structured metadata — model, backend, attempt, plan, the verification /
-simulation / execution verdicts, latency and the four checks
-``harness.verify_plan`` evaluated.  It never shows model reasoning: it is
-metadata, not a transcript.
+The GemmaBot Guard (``frontend.panels.brain`` and ``frontend.console.guard``)
+is the verification interface: a verdict banner (APPROVED / REJECTED), the seven
+stages — plan received, the four checks, simulation, the decision — the six
+outcomes, and, for a refused plan, ERROR · ACTION · ATTEMPT followed by REPAIR
+REQUESTED or ✓ REPAIRED PLAN VERIFIED and a compact "Why was this rejected?".
+Every sentence in it is composed from the verifier's own records, and the
+model's name is a muted line at the bottom: the product is not "a model made a
+plan", it is "the guard stopped an unsafe plan from executing".  It never shows
+model reasoning — structured metadata, not a transcript.
 
 The Vision Lab (``frontend.panels.vision``) reads an image into a world model,
 shows the reading next to the world it proposes, validates that world
@@ -57,6 +61,7 @@ from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
 from frontend.components.blocks import empty_state, fact_cards
+from frontend.console import guard as guard_console
 from frontend.console import pipeline as console
 from frontend.console import shell as console_shell
 from frontend.panels import benchmark as benchmark_panel
@@ -242,23 +247,32 @@ def _load_vision_into_simulator() -> None:
     _clear_run_state()
 
 
+# The scope the Mission timeline is drawn with, and the one the Mission player
+# is given so its playhead can mark the action it is showing.  One string ties
+# the two together, and only the Mission screen passes it: the labs render
+# players of their own, and their playheads must not move this timeline.
+MISSION_SCOPE = "mission"
+
+
 def _render_replay(replay: dict) -> None:
     """The execution player *is* the Mission viewport: the simulator's own run.
 
     Compact (no built-in step list): the console draws the action timeline
     beside it, so the viewport keeps the stage, the live step readout
-    (``02/06 · forward ×7``), the transport and the speed selector.
+    (``02/06 · forward ×7``), the transport — play / pause / step / reset and
+    the speed selector — and the outcome line.  ``MISSION_SCOPE`` is the
+    timeline below it, whose rows the player marks as its playhead moves.
     """
     autoplay = bool(st.session_state.pop("replay_autoplay", False))
-    st.components.v1.html(
+    st.iframe(
         player_view.player_html(
             replay,
             autoplay=autoplay,
             cell_px=S.CELL_SIZE,
             show_steps=False,
+            timeline_scope=MISSION_SCOPE,
         ),
         height=player_view.player_height(S.CELL_SIZE),
-        scrolling=False,
     )
 
 
@@ -276,12 +290,16 @@ def _draw_viewport(world: dict) -> None:
 
 
 def _render_safety_replay(attempt: dict) -> None:
-    """The same player, pointed at one attempt of the safety lab."""
+    """The same player, pointed at one attempt of the safety lab.
+
+    No timeline scope: this player shows a *demonstration*
+    of a plan the guard refused, and it has no console timeline of its own — so
+    it is given no scope, and can mark nothing outside this frame.
+    """
     autoplay = bool(st.session_state.pop("safety_autoplay", False))
-    st.components.v1.html(
+    st.iframe(
         player_view.player_html(attempt["timeline"], autoplay=autoplay),
         height=player_view.player_height(),
-        scrolling=False,
     )
 
 
@@ -297,10 +315,9 @@ def _render_log_replay(timeline: dict) -> None:
     from the recorded world and plan, i.e. by ``simulator.step`` alone.
     """
     autoplay = bool(st.session_state.pop("log_replay_autoplay", False))
-    st.components.v1.html(
+    st.iframe(
         player_view.player_html(timeline, autoplay=autoplay),
         height=player_view.player_height(),
-        scrolling=False,
     )
 
 
@@ -447,7 +464,7 @@ def _run_zones(stored: dict) -> None:
                     if timeline and timeline.get("halted") else ""
                 ),
             )
-            + console.timeline_html(rows),
+            + console.timeline_html(rows, scope=MISSION_SCOPE),
             unsafe_allow_html=True,
         )
     with status_col:
@@ -475,8 +492,14 @@ def _run_brain_meta(
     approved: bool | None = None,
     executed: bool | None = None,
     halted: str | None = None,
+    refusal: dict | None = None,
 ) -> dict:
-    """Post-run Guard metadata: the verified plan plus its real four checks."""
+    """Post-run Guard metadata: the verified plan plus its real four checks.
+
+    *refusal* is :func:`engine.first_refusal`'s record for the first attempt the
+    guard refused, when there was one; the guard panel reports ERROR, ACTION,
+    ATTEMPT and the repair from it.
+    """
     return brain.run_metadata(
         backend_label=engine.backend_label(backend),
         model=engine.backend_model(backend),
@@ -491,6 +514,7 @@ def _run_brain_meta(
         executed=executed,
         halted=halted,
         error=error,
+        refusal=refusal,
     )
 
 
@@ -757,7 +781,9 @@ with tabs["Mission"]:
                     status_slot,
                     key,
                     status_detail,
-                    meta=f"attempt {live['attempt']}/{max_tries}",
+                    # Before the first attempt record arrives the loop is on
+                    # attempt 1, not 0 — never show "attempt 0/3".
+                    meta=f"attempt {live['attempt'] or 1}/{max_tries}",
                 )
 
             def _on_attempt(record: dict) -> None:
@@ -816,6 +842,20 @@ with tabs["Mission"]:
             else:
                 st.session_state.replay = None
 
+            # The first attempt the guard refused, re-verified against the world
+            # this run was planned in.  It is what lets the guard panel say
+            # ATTEMPT 1 / 3 and REPAIR REQUESTED (or ✓ REPAIRED PLAN VERIFIED)
+            # from the verifier's own records — no prompt, no reply.
+            refusal = engine.first_refusal(run_world, result.get("history"))
+
+            # The two things that happen after approval, as tri-states read off
+            # the artifacts in hand: a sealed approval, and a timeline the guard
+            # itself verified.  ``None`` means the run never got that far — it is
+            # never a way of saying "failed", so a run with no plan cannot read
+            # as an execution the gate refused.
+            sealed = approved is not None
+            ran = replay.get("approved") if replay else None
+
             # Brain metadata: the plan this run verified (or last attempted)
             # plus the four checks harness.verify_plan really evaluated.
             brain_meta = _run_brain_meta(
@@ -827,10 +867,11 @@ with tabs["Mission"]:
                 latency=result["latency"],
                 steps=len(replay["steps"]) if replay else None,
                 reached=replay["reached"] if replay else None,
-                approved=approved is not None,
-                executed=replay is not None,
+                approved=True if sealed else None,
+                executed=ran,
                 halted=replay.get("halted") if replay else None,
                 error=result["error"],
+                refusal=refusal,
             )
             _live_status(
                 brain_meta["status"]["key"], brain_meta["status"]["detail"]
@@ -943,7 +984,7 @@ with tabs["Mission"]:
             empty_state(
                 "No run in this session.",
                 "Enter a mission and run a plan — the pipeline, the execution "
-                "timeline and the verification status appear here.",
+                "timeline and the verification status will appear here.",
             ),
             unsafe_allow_html=True,
         )
@@ -953,14 +994,15 @@ with tabs["Mission"]:
 with tabs["Safety Lab"]:
     st.markdown(
         console_shell.zone_bar_html(
-            "Safety lab", "the verifier refuses, the loop repairs"
+            guard_console.PRODUCT, "the verifier refuses, the loop repairs"
         ),
         unsafe_allow_html=True,
     )
     st.markdown(
         f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
         f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.LG)}'>"
-        "The verifier refuses a plan, the loop repairs it. Every verdict, "
+        "The GemmaBot Guard refuses a plan before it executes, and the loop "
+        "repairs it. Every verdict, "
         "collision cell and replay below comes from the real pipeline — only "
         "dry mode's reply text is scripted, and it says so."
         "</div>",

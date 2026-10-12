@@ -3,15 +3,18 @@
 Owner: FRONTEND.  Pure string building: no Streamlit import, no network.
 
 ``player_html()`` returns one complete HTML document that
-``st.components.v1.html`` renders into an iframe.  It is the only animation
+``st.iframe`` renders into an iframe.  It is the only animation
 runtime in the app: vanilla CSS + ~4 kB of plain JavaScript, no external
 script, no CDN, no library.
 
 It replays ``frontend.simulation.player.build_timeline()`` exactly as the
 backend simulator produced it — the robot interpolates one cell per 300 ms
 step, turns rotate smoothly, the trail is drawn in behind it and the active
-step is highlighted in the step list.  Transport: play / pause / reset and
-0.5x / 1x / 2x / 4x playback speed.
+step is highlighted in the step list.  Transport: play / pause / **step** /
+reset and 0.5x / 1x / 2x / 4x playback speed.  Step advances the playhead to
+the end of exactly one action and stops, which is one *verified* action: the
+timeline is the guard's own approved execution, and stepping never asks the
+simulator for anything new.
 
 The stage is drawn at a fixed cell size (the geometry the animation
 interpolates in), then scaled down by ``fit()`` when the frame it was given is
@@ -22,10 +25,41 @@ window is, and the drawing must neither overflow nor be clipped.
 their own action timeline next to it (the Mission console does); the transport
 and the live step readout stay either way.
 
+Outcome row
+-----------
+Under the transport sits one fixed-height line stating what the run really did:
+the goal reached, with the duration, the action count and where the robot
+finished — or exactly why it stopped, in the simulator's own words.  Every
+string is built in Python (:func:`outcome_copy`) from the timeline, so the
+JavaScript chooses between verdicts it was handed and never composes one.
+
+Provenance
+----------
+A timeline carries both an ``approved`` and a ``refused`` key, taken from the
+guard's own result.  Only a verified execution says *executed*; a demonstrated
+plan (the Safety Lab's preview of a refused plan) says *simulated*, and a
+refused approval says nothing ran at all.  Nothing on screen may imply an
+execution that did not happen.
+
+Host timeline
+-------------
+``st.iframe`` is same-origin with the app, so when a host hands the player a
+``timeline_scope`` the player marks *the action being shown right now* on that
+host's own action timeline — ``.gb-tl[data-timeline=<scope>] .gb-tl-row`` gets
+``data-live="true"`` while the playhead is on it, and the mark is cleared when
+the playhead moves on and the moment the run finishes.
+
+It writes that one attribute and nothing else: every row's state and verdict is
+the console's, rendered from the backend, and at rest the timeline reads exactly
+as the server drew it.  A host on another origin, or one that rendered no
+timeline with that scope, is simply never marked — and the scope is also what
+keeps two players on one page from marking each other's timelines.
+
 Public surface
 --------------
-player_html(timeline, *, cell_px, autoplay, speed, show_steps) -> str
+player_html(timeline, *, cell_px, autoplay, speed, show_steps, timeline_scope) -> str
 player_height(cell_px) -> int      # iframe height that avoids scrolling
+outcome_copy(timeline) -> dict     # the outcome row's words, all of them
 """
 from __future__ import annotations
 
@@ -37,6 +71,7 @@ from frontend.components import animations as A
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
+from frontend.simulation import player
 from frontend.simulation.ui_helpers import (
     GOAL_SVG,
     PATH_SVG,
@@ -50,6 +85,7 @@ LABEL_W = S.CELL_LABEL_HERO   # row-label gutter
 LABEL_H = 20                  # column-label band
 HEAD_H = 30                   # header row
 TRANSPORT_H = 30              # transport row
+OUTCOME_H = 24                # the run's verdict, under the transport
 
 
 def pitch(cell_px: int) -> int:
@@ -71,6 +107,8 @@ def player_height(cell_px: int = S.CELL_SIZE) -> int:
         + LABEL_H + stage_px(cell_px) + S.XS
         + S.MD                     # body → transport gap
         + TRANSPORT_H
+        + S.SM                     # transport → outcome gap
+        + OUTCOME_H
         + S.MD                     # bottom padding
         + S.SM                     # safety
     )
@@ -117,18 +155,31 @@ def _cells_html(world: dict, cell_px: int) -> str:
 
 
 def _col_labels_html(cell_px: int) -> str:
-    step = pitch(cell_px)
+    """Column numbers, one per column.
+
+    Every label is as wide as the pitch except the last, which is only a cell
+    wide: that makes the band exactly ``stage_px()`` across, so the numbers sit
+    over their own columns and the frame height the caller computed still
+    matches what the browser lays out.
+    """
+    cs = int(cell_px)
+    step = pitch(cs)
     return "".join(
-        f"<div class='gb-axis col' style='width:{step}px;height:{LABEL_H}px'>"
+        f"<div class='gb-axis col' "
+        f"style='width:{cs if x == SIZE - 1 else step}px;height:{LABEL_H}px'>"
         f"{x}</div>"
         for x in range(SIZE)
     )
 
 
 def _row_labels_html(cell_px: int) -> str:
-    step = pitch(cell_px)
+    """Row numbers, sized like the columns so the stack never grows past the
+    stage it labels."""
+    cs = int(cell_px)
+    step = pitch(cs)
     return "".join(
-        f"<div class='gb-axis row' style='width:{LABEL_W}px;height:{step}px'>"
+        f"<div class='gb-axis row' "
+        f"style='width:{LABEL_W}px;height:{cs if y == SIZE - 1 else step}px'>"
         f"{y}</div>"
         for y in range(SIZE)
     )
@@ -179,6 +230,163 @@ def _robot_html(cell_px: int) -> str:
     )
 
 
+# ── Outcome wording ─────────────────────────────────────────────────────────
+
+# How each playback kind introduces itself: (heading, the action word its Step
+# button may use, what its Play button replays).  A preview demonstrates an
+# unapproved plan, a replay re-runs a logged one and an execution is the guard's
+# own verified run — three different things, and the reader is told which.
+_KIND_WORDS: dict[str, tuple[str, str, str]] = {
+    player.KIND_EXECUTION: (
+        "Execution playback",
+        "verified action",
+        "the recorded execution",
+    ),
+    player.KIND_REPLAY: (
+        "Run replay",
+        "action of this replay",
+        "the logged plan again",
+    ),
+    player.KIND_PREVIEW: (
+        "Simulation preview",
+        "action of this preview",
+        "this preview of an unverified plan",
+    ),
+}
+
+
+def kind_words(timeline: dict) -> tuple[str, str, str]:
+    """The heading and button words for a timeline's playback kind."""
+    return _KIND_WORDS[player.kind_of(timeline)]
+
+
+def _seconds(ms: int | float) -> str:
+    """A timeline length as the console prints it: ``5.70 s``."""
+    return f"{max(0.0, float(ms)) / 1000:.2f} s"
+
+
+def _cell_text(coord) -> str:
+    """A cell as the rest of the console prints it: ``(6, 5)``."""
+    pair = list(coord or [])
+    x = int(pair[0]) if len(pair) > 0 else 0
+    y = int(pair[1]) if len(pair) > 1 else 0
+    return f"({x}, {y})"
+
+
+def _count(number: int, word: str) -> str:
+    """``1 action`` / ``3 actions``."""
+    return f"{number} {word}" if number == 1 else f"{number} {word}s"
+
+
+def outcome_copy(timeline: dict) -> dict:
+    """The words the outcome row shows — all of them, written in one place.
+
+    Returns ``state`` (how the row is coloured: ``refused`` / ``halted`` /
+    ``reached`` / ``short`` / ``none``), ``ready`` (nothing played yet) and
+    ``terminal`` (the run finished).  The player's JavaScript picks between the
+    two lines and never composes a verdict of its own.
+
+    Provenance decides the verb.  A guard-verified execution says *executed*;
+    a demonstrated plan says *simulated*; a refused approval says outright that
+    no action ran, because none did — the simulator breaks at the first
+    refusal and every action after it is still pending.
+    """
+    steps = timeline.get("steps") or []
+    planned = int(timeline.get("planned") or len(steps))
+    run = int(timeline.get("actions_run") or 0)
+    approved = bool(timeline.get("approved"))
+    refused = str(timeline.get("refused") or "")
+    kind = player.kind_of(timeline)
+    verb = "executed" if approved else "simulated"
+    took = f"{_seconds(timeline.get('duration_ms') or 0)} at 1×"
+    where = (
+        f"final {_cell_text(timeline.get('final'))} "
+        f"facing {timeline.get('final_dir') or 'E'}"
+    )
+
+    # The execution gate refused the approval: nothing stepped, nothing ran.
+    if refused:
+        text = (
+            f"Refused — {refused} · no action ran · the robot never left "
+            f"{_cell_text(timeline.get('final'))}"
+        )
+        return {"state": "refused", "ready": text, "terminal": text}
+
+    if not steps:
+        text = "no actions — nothing to play back"
+        return {"state": "none", "ready": text, "terminal": text}
+
+    if approved:
+        ready = f"verified plan · {_count(planned, 'action')} · {took} · press Play or Step"
+    elif kind == player.KIND_REPLAY:
+        # A logged plan says nothing about approval, so this line must not claim
+        # anything about it — only what the replay is.
+        ready = (
+            f"replay of a logged run · {_count(planned, 'action')} · the recorded "
+            f"plan run through the simulator again, not the original session"
+        )
+    else:
+        ready = (
+            f"unverified preview · {_count(planned, 'action')} · the guard did not "
+            f"approve this plan, so nothing was executed"
+        )
+
+    halted = timeline.get("halted")
+    if halted:
+        what = (
+            f"action {int(timeline.get('halted_step') or 0):02d} "
+            f"{timeline.get('halted_label') or ''}"
+        ).strip()
+        missed = int(timeline.get("unexecuted") or 0)
+        # "never reached" rather than "never executed": the simulator stopped,
+        # so those actions were neither executed nor simulated, and the line
+        # should not say which of the two it was.
+        tail = f" · {_count(missed, 'action')} never reached" if missed else ""
+        return {
+            "state": "halted",
+            "ready": ready,
+            "terminal": (
+                f"Stopped ({halted}) · {what} · "
+                f"{timeline.get('halted_message') or 'the simulator refused it'} · "
+                f"{run} of {planned} {verb} · stopped on "
+                f"{_cell_text(timeline.get('halted_at'))}{tail}"
+            ),
+        }
+
+    if timeline.get("reached"):
+        return {
+            "state": "reached",
+            "ready": ready,
+            "terminal": f"Goal reached · {run} of {planned} {verb} · {took} · {where}",
+        }
+
+    return {
+        "state": "short",
+        "ready": ready,
+        "terminal": (
+            f"Finished short of the goal · {run} of {planned} {verb} · {took} · {where}"
+        ),
+    }
+
+
+def _outcome_html(copy: dict, *, autoplay: bool) -> str:
+    """The outcome row, already filled in for the state the player boots in.
+
+    A fresh run starts at the beginning, so the row shows the plan line; a run
+    opened without autoplay boots on its finished frame, so the row shows the
+    verdict.  The runtime corrects either one on its first render.
+    """
+    state = str(copy.get("state") or "none")
+    playing_from_start = bool(autoplay) and state != "none"
+    text = str(copy.get("ready") if playing_from_start else copy.get("terminal") or "")
+    look = "ready" if playing_from_start else state
+    return (
+        f"<div class='gb-outcome' id='gb-outcome' data-state='{html.escape(look, quote=True)}' "
+        f"role='status' aria-live='polite' title='{html.escape(text, quote=True)}'>"
+        f"{html.escape(text)}</div>"
+    )
+
+
 # ── Stylesheet ───────────────────────────────────────────────────────────────
 
 def _css(cell_px: int) -> str:
@@ -196,21 +404,33 @@ html, body {{
 .gb-exec {{ padding: {S.px(S.MD)}; }}
 
 /* ── Header ───────────────────────────────────────────────────────────── */
+/* The head row never wraps (its height is fixed and the frame height is
+   computed from it), so every text item must be able to give width back: the
+   rule collapses, the words ellipsise and the state chip keeps its box.  A
+   narrow host column therefore truncates instead of overflowing the frame. */
 .gb-head {{
   display: flex; align-items: center; gap: {S.px(S.SM)};
   height: {HEAD_H}px; margin-bottom: {S.px(S.MD)};
-  font-family: {T.FONT_MONO};
+  font-family: {T.FONT_MONO}; overflow: hidden;
 }}
+.gb-head > * {{ min-width: 0; }}
 .gb-head-title {{
   font-size: {T.SIZE_SM}px; color: {C.TEXT_MUTED}; letter-spacing: {T.TRACKING_WIDE};
-  text-transform: uppercase; white-space: nowrap;
+  text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }}
-.gb-rule {{ flex: 1; height: 1px; background: {C.BORDER_SUBTLE}; }}
-.gb-stepnow {{ font-size: {T.SIZE_SM}px; color: {C.TEXT_SECONDARY}; white-space: nowrap; }}
-.gb-readout {{ font-size: {T.SIZE_SM}px; color: {C.ACCENT_BLUE}; white-space: nowrap; }}
+.gb-rule {{ flex: 1 1 0; height: 1px; background: {C.BORDER_SUBTLE}; }}
+.gb-stepnow {{
+  font-size: {T.SIZE_SM}px; color: {C.TEXT_SECONDARY};
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+.gb-readout {{
+  font-size: {T.SIZE_SM}px; color: {C.ACCENT_BLUE};
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
 .gb-chip {{
   font-family: {T.FONT_MONO}; font-size: {T.SIZE_SM}px; letter-spacing: {T.TRACKING_WIDE};
   padding: 2px {S.px(S.SM)}; border-radius: {S.RADIUS_SM}px; white-space: nowrap;
+  flex: 0 0 auto;
   border: 1px solid {C.BORDER_DEFAULT}; background: {C.BG_ELEVATED}; color: {C.TEXT_SECONDARY};
 }}
 .gb-chip.ok {{ background: {C.SUCCESS_BG}; border-color: {C.SUCCESS_BORDER}; color: {C.SUCCESS}; }}
@@ -221,12 +441,17 @@ html, body {{
   animation: gb-pulse 1.8s {A.EASE_INOUT} infinite;
 }}
 
-/* ── Body: grid stage + step list ─────────────────────────────────────── */
+/* ── Body: grid stage + step list ───────────────────────────────────────
+   One row, always.  The stage keeps its width (its geometry is what the
+   animation interpolates, and fit() scales it), and the step rail is the item
+   that gives width back — so the frame height the caller computed is the height
+   the browser lays out, at any host width.  Wrapping the rail under the stage
+   would make the document grow by a step-dependent amount nobody can predict. */
 .gb-body {{
-  display: flex; flex-wrap: wrap; align-items: flex-start;
+  display: flex; flex-wrap: nowrap; align-items: flex-start;
   gap: {S.px(S.LG)};
 }}
-.gb-stage-wrap {{ display: flex; flex-direction: column; }}
+.gb-stage-wrap {{ display: flex; flex-direction: column; flex: 0 0 auto; }}
 /* Compact: the host draws its own action timeline, so the stage is centred in
    whatever width the frame gives it. */
 .gb-exec-compact .gb-stage-wrap {{ margin: 0 auto; }}
@@ -292,7 +517,8 @@ html, body {{
 
 /* ── Step list ────────────────────────────────────────────────────────── */
 .gb-steps {{
-  display: flex; flex-direction: column; width: 232px;
+  display: flex; flex-direction: column; flex: 1 1 232px; min-width: 0;
+  max-width: 232px;
   max-height: {stage_px(cs)}px; overflow-y: auto;
   border: 1px solid {C.BORDER_SUBTLE}; border-radius: {S.RADIUS_MD}px;
   background: {C.BG_SURFACE};
@@ -323,32 +549,76 @@ html, body {{
   max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }}
 
-/* ── Transport ────────────────────────────────────────────────────────── */
-.gb-transport {{ display: flex; align-items: center; gap: {S.px(S.SM)}; margin-top: {S.px(S.MD)}; }}
+/* ── Transport ──────────────────────────────────────────────────────────
+   One row: play/pause, step, reset, the speed group, the progress bar and the
+   clock.  The bar is the only stretchy item, so the row gives width back by
+   shortening the bar rather than by pushing the clock out of the frame; wrap
+   is the last resort for a host too narrow for even that. */
+.gb-transport {{
+  display: flex; flex-wrap: nowrap; align-items: center;
+  gap: {S.px(S.SM)}; margin-top: {S.px(S.MD)};
+}}
+/* Dense by design: the transport is three controls, a speed group and a bar, and
+   it has to fit the narrowest console column (~360px) on one row.  nowrap keeps
+   every control at its natural width, so the row height is the same at every
+   host width and the frame height the caller computed stays correct. */
 .gb-btn {{
   font-family: {T.FONT_MONO}; font-size: {T.SIZE_SM}px; letter-spacing: {T.TRACKING_WIDE};
-  padding: 5px {S.px(S.MD)}; border-radius: {S.RADIUS_SM}px;
+  padding: 5px {S.px(S.SM)}; border-radius: {S.RADIUS_SM}px;
   border: 1px solid {C.BORDER_DEFAULT}; background: {C.BG_ELEVATED}; color: {C.TEXT_PRIMARY};
-  cursor: pointer; transition: background 150ms {A.EASE_OUT}, border-color 150ms {A.EASE_OUT};
+  cursor: pointer; white-space: nowrap;
+  transition: background 150ms {A.EASE_OUT}, border-color 150ms {A.EASE_OUT};
 }}
 .gb-btn:hover {{ background: {C.BG_OVERLAY}; border-color: {C.BORDER_STRONG}; }}
 .gb-btn:focus-visible {{ outline: 2px solid {C.ACCENT_BLUE}; outline-offset: 2px; }}
 .gb-btn-primary {{ background: {C.ACCENT_BLUE}; border-color: {C.ACCENT_BLUE}; color: {C.BG_BASE}; font-weight: {T.WEIGHT_SEMIBOLD}; }}
-.gb-btn-primary:hover {{ background: {C.ACCENT_BLUE_DIM}; border-color: {C.ACCENT_BLUE_DIM}; }}
+.gb-btn:disabled {{
+  background: {C.BG_SURFACE}; border-color: {C.BORDER_SUBTLE}; color: {C.TEXT_MUTED};
+  cursor: not-allowed;
+}}
 .gb-speed {{ display: flex; border: 1px solid {C.BORDER_DEFAULT}; border-radius: {S.RADIUS_SM}px; overflow: hidden; }}
 .gb-speed-btn {{
-  font-family: {T.FONT_MONO}; font-size: {T.SIZE_SM}px; padding: 5px {S.px(S.SM)};
+  font-family: {T.FONT_MONO}; font-size: {T.SIZE_SM}px; padding: 5px {S.px(S.XS)};
   border: none; border-right: 1px solid {C.BORDER_SUBTLE}; background: transparent;
-  color: {C.TEXT_MUTED}; cursor: pointer; transition: background 150ms {A.EASE_OUT}, color 150ms {A.EASE_OUT};
+  color: {C.TEXT_MUTED}; cursor: pointer; white-space: nowrap;
+  transition: background 150ms {A.EASE_OUT}, color 150ms {A.EASE_OUT};
 }}
 .gb-speed-btn:last-child {{ border-right: none; }}
 .gb-speed-btn:hover {{ background: {C.BG_OVERLAY}; color: {C.TEXT_PRIMARY}; }}
 .gb-speed-btn.on {{ background: {C.ACCENT_BLUE}; color: {C.BG_BASE}; font-weight: {T.WEIGHT_SEMIBOLD}; }}
-.gb-progress {{ flex: 1; height: 3px; min-width: 60px; background: {C.BG_OVERLAY}; border-radius: 2px; overflow: hidden; }}
+.gb-progress {{
+  flex: 1 1 0; height: 3px; min-width: 0; background: {C.BG_OVERLAY};
+  border-radius: 2px; overflow: hidden;
+}}
 .gb-progress span {{ display: block; height: 100%; width: 0; background: {C.ACCENT_BLUE}; transition: width 100ms linear; }}
-.gb-time {{ font-family: {T.FONT_MONO}; font-size: {T.SIZE_XS}px; color: {C.TEXT_MUTED}; white-space: nowrap; }}
 .gb-speed-btn:focus-visible {{
   outline: 2px solid {C.ACCENT_BLUE}; outline-offset: 2px;
+}}
+
+/* ── Outcome ────────────────────────────────────────────────────────────
+   Fixed height, one line: the verdict the timeline itself carries.  Green
+   only for a verified run that reached the goal; red carries the reason it
+   stopped; a preview keeps the neutral border so it never reads as an
+   execution.  The full sentence lives in the title, because the line
+   ellipsises in a narrow frame. */
+.gb-outcome {{
+  display: block; height: {OUTCOME_H}px; line-height: {OUTCOME_H - 2}px;
+  margin-top: {S.px(S.SM)}; padding: 0 {S.px(S.SM)};
+  border: 1px solid transparent; border-radius: {S.RADIUS_SM}px;
+  font-family: {T.FONT_MONO}; font-size: {T.SIZE_XS}px; color: {C.TEXT_MUTED};
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+.gb-outcome[data-state='paused'] {{ border-color: {C.BORDER_DEFAULT}; color: {C.TEXT_SECONDARY}; }}
+.gb-outcome[data-state='running'] {{ border-color: {C.RUNNING_BORDER}; color: {C.TEXT_SECONDARY}; }}
+.gb-outcome[data-state='reached'] {{
+  background: {C.SUCCESS_BG}; border-color: {C.SUCCESS_BORDER}; color: {C.SUCCESS};
+}}
+.gb-outcome[data-state='short'] {{
+  background: {C.WARNING_BG}; border-color: {C.WARNING_BORDER}; color: {C.WARNING};
+}}
+.gb-outcome[data-state='halted'],
+.gb-outcome[data-state='refused'] {{
+  background: {C.ERROR_BG}; border-color: {C.ERROR_BORDER}; color: {C.ERROR};
 }}
 /* The player lives in its own document, so it repeats the app's reduced-motion
    rule for its own transitions.  The script checks the same media query before
@@ -383,11 +653,12 @@ _JS = r"""
   var rotorEl = document.getElementById('gb-rotor');
   var traceEl = document.getElementById('gb-trace');
   var barEl = document.getElementById('gb-bar');
-  var timeEl = document.getElementById('gb-time');
   var chipEl = document.getElementById('gb-chip');
   var stepNowEl = document.getElementById('gb-stepnow');
   var readoutEl = document.getElementById('gb-readout');
   var playBtn = document.getElementById('gb-play');
+  var stepBtn = document.getElementById('gb-step');
+  var outEl = document.getElementById('gb-outcome');
   var resetBtn = document.getElementById('gb-reset');
   var stepEls = Array.prototype.slice.call(document.querySelectorAll('.gb-step'));
   var speedBtns = Array.prototype.slice.call(document.querySelectorAll('.gb-speed-btn'));
@@ -399,6 +670,7 @@ _JS = r"""
   var enteredCursor = 0;    // events whose beat has started
   var targetCoord = null;
   var lastActive = 0;
+  var lastPosted = 'unset'; // sentinel: forces the first sync to clear the host
   var lastTs = 0;
   var frameId = 0;
   var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -464,6 +736,7 @@ _JS = r"""
       stepEls[s].classList.remove('done', 'active');
     }
     doneCursor = 0; enteredCursor = 0; targetCoord = null; lastActive = 0;
+    lastPosted = 'unset';
   }
 
   function markTrail(coord) {
@@ -542,8 +815,22 @@ _JS = r"""
     return active;
   }
 
-  function syncChrome(ms, st, activeStep) {
+  // The action the player is *showing*: the last one that has begun.  The step
+  // list already calls an action done the moment its end is reached, so the
+  // readouts need their own rule — at an exact step boundary nothing is active,
+  // and a step would otherwise announce the action before the one it stepped
+  // to.  Every readout and the host mark go through this one function.
+  function shownStep(ms) {
+    var at = 0;
+    for (var i = 0; i < TL.steps.length; i++) {
+      if (TL.steps[i].start_ms <= ms + 0.5) { at = i + 1; }
+    }
+    return at;
+  }
+
+  function syncChrome(ms, st) {
     var finished = TL.duration_ms > 0 && ms >= TL.duration_ms;
+    var shown = shownStep(ms);
     var chip = 'READY', cls = 'gb-chip';
     if (finished) {
       if (TL.reached) { chip = 'GOAL REACHED'; cls = 'gb-chip ok'; }
@@ -556,10 +843,10 @@ _JS = r"""
     if (chipEl) { chipEl.textContent = chip; chipEl.className = cls; }
 
     var label;
-    if (activeStep > 0 && TL.steps[activeStep - 1]) {
-      label = pad(activeStep) + '/' + pad(TL.steps.length) + ' · ' + TL.steps[activeStep - 1].label;
-    } else if (finished) {
+    if (finished) {
       label = TL.steps.length + ' steps · ' + TL.cells + ' cells';
+    } else if (shown > 0 && TL.steps[shown - 1]) {
+      label = pad(shown) + '/' + pad(TL.steps.length) + ' · ' + TL.steps[shown - 1].label;
     } else if (TL.steps.length) {
       label = pad(1) + '/' + pad(TL.steps.length) + ' · ' + TL.steps[0].label;
     } else {
@@ -573,16 +860,18 @@ _JS = r"""
     }
     if (barEl) {
       barEl.style.width = (TL.duration_ms > 0 ? (Math.min(ms, TL.duration_ms) / TL.duration_ms) * 100 : 100) + '%';
-    }
-    if (timeEl) {
-      timeEl.textContent = seconds(Math.min(ms, TL.duration_ms)) + ' / ' + seconds(TL.duration_ms);
+      // The bar's own tooltip is the clock: how far the playhead has come of the
+      // run's length.  A separate readout cost ~44px the narrowest console
+      // column does not have, and the outcome line states the duration anyway.
+      barEl.parentNode.setAttribute('title', seconds(Math.min(ms, TL.duration_ms)) +
+        ' of ' + seconds(TL.duration_ms) + ' at 1×');
     }
   }
 
   function render() {
     var st = stateAt(t);
     applyStatic(t);
-    var activeStep = syncSteps(t);
+    syncSteps(t);
     var index = st.index;
     if (index >= 0 && TL.events[index] && TL.events[index].type === 'move') {
       setTarget(TL.events[index].to);
@@ -593,7 +882,105 @@ _JS = r"""
       robotEl.style.transform = 'translate(' + (st.x - CELL / 2) + 'px,' + (st.y - CELL / 2) + 'px)';
     }
     if (rotorEl) { rotorEl.style.transform = 'rotate(' + st.angle + 'deg)'; }
-    syncChrome(t, st, activeStep);
+    syncChrome(t, st);
+    syncOutcome();
+    syncStepBtn();
+    syncHost();
+  }
+
+  // ── Outcome: the run's own verdict ────────────────────────────────────
+  // Every sentence comes from TL.copy, which Python built out of the timeline.
+  // This function only chooses between them, so the animation can never
+  // announce a result the execution did not produce.
+  function syncOutcome() {
+    if (!outEl) { return; }
+    var finished = TL.duration_ms > 0 && t >= TL.duration_ms;
+    var state = 'ready';
+    var text = TL.copy.ready;
+    if (TL.duration_ms <= 0 || finished) {
+      state = TL.copy.state;
+      text = TL.copy.terminal;
+    } else if (t > 0) {
+      var index = shownStep(t);
+      if (index <= 0) { index = 1; }
+      var spec = TL.steps[index - 1];
+      var at = 'action ' + pad(index) + '/' + pad(TL.steps.length) +
+        (spec ? ' \u00b7 ' + spec.label : '');
+      state = playing ? 'running' : 'paused';
+      text = playing ? ((TL.approved ? 'Executing ' : 'Simulating ') + at)
+                     : ('Paused at ' + at);
+    }
+    if (outEl.textContent !== text) { outEl.textContent = text; }
+    if (outEl.getAttribute('data-state') !== state) { outEl.setAttribute('data-state', state); }
+    if (outEl.getAttribute('title') !== text) { outEl.setAttribute('title', text); }
+  }
+
+  function syncStepBtn() {
+    if (!stepBtn) { return; }
+    var off = !(TL.duration_ms > 0 && TL.steps.length > 0);
+    if (stepBtn.disabled !== off) { stepBtn.disabled = off; }
+  }
+
+  // ── Step: exactly one action, then stop ───────────────────────────────
+  // The playhead moves to the end of the next action of the plan the guard
+  // re-verified before the simulator stepped it, so a step can never show an
+  // unverified action.  It only moves the playhead; nothing is stepped again.
+  function nextStepEnd(ms) {
+    for (var i = 0; i < TL.steps.length; i++) {
+      if (TL.steps[i].end_ms > ms + 0.5) { return TL.steps[i].end_ms; }
+    }
+    return -1;
+  }
+
+  function stepOnce() {
+    if (TL.duration_ms <= 0 || !TL.steps.length) { return; }
+    pause();
+    var end = nextStepEnd(t);
+    if (end < 0) {                     // past the last action: replay it again
+      t = 0;
+      resetDynamic();
+      end = nextStepEnd(0);
+    }
+    if (end < 0) { return; }
+    t = Math.min(TL.duration_ms, end);
+    render();
+    syncPlayLabel();
+  }
+
+  // ── Host timeline ─────────────────────────────────────────────────────
+  // The player is a same-origin iframe, so when the host named a timeline to
+  // follow it can mark the action being shown right now on that timeline's own
+  // rows.  One attribute, set and cleared: the rows' state and verdict belong
+  // to the host, and are never written from here.  A host that named nothing,
+  // or sits on another origin, is simply never marked.
+  function hostRows() {
+    if (!TL.timeline_scope || window.parent === window) { return []; }
+    try {
+      return window.parent.document.querySelectorAll(
+        '.gb-tl[data-timeline="' + TL.timeline_scope + '"] .gb-tl-row[data-action]'
+      );
+    } catch (err) {
+      return [];   // not same-origin with the host: nothing to mark
+    }
+  }
+
+  function markHost(action) {
+    var found = hostRows();
+    for (var i = 0; i < found.length; i++) {
+      if (action > 0 && parseInt(found[i].getAttribute('data-action'), 10) === action) {
+        found[i].setAttribute('data-live', 'true');
+      } else {
+        found[i].removeAttribute('data-live');
+      }
+    }
+  }
+
+  function syncHost() {
+    var finished = TL.duration_ms > 0 && t >= TL.duration_ms;
+    var shown = finished ? 0 : shownStep(t);
+    if (shown === lastPosted) { return; }
+    lastPosted = shown;
+    markHost(shown);
   }
 
   // ── Playback loop ─────────────────────────────────────────────────────
@@ -692,6 +1079,7 @@ _JS = r"""
   if (playBtn) {
     playBtn.addEventListener('click', function () { if (playing) { pause(); } else { play(); } });
   }
+  if (stepBtn) { stepBtn.addEventListener('click', stepOnce); }
   if (resetBtn) { resetBtn.addEventListener('click', reset); }
   for (var b = 0; b < speedBtns.length; b++) {
     speedBtns[b].addEventListener('click', function (event) {
@@ -705,6 +1093,9 @@ _JS = r"""
       if (playing) { pause(); } else { play(); }
     } else if (key === 'r' || key === 'R') {
       reset();
+    } else if (key === 's' || key === 'S' || key === 'ArrowRight') {
+      event.preventDefault();
+      stepOnce();
     }
   });
 
@@ -732,6 +1123,7 @@ def _payload(
     cell_px: int,
     autoplay: bool,
     speed: float,
+    timeline_scope: str | None,
 ) -> dict:
     """Compact JSON state handed to the player runtime."""
     events = []
@@ -761,6 +1153,11 @@ def _payload(
         "speed": float(speed),
         "autoplay": bool(autoplay),
         "trace_draw_ms": A.TRACE_DRAW_MS,
+        # Provenance, the outcome row's own words, and the host timeline this
+        # playhead may mark — the runtime reads all three, and decides nothing.
+        "approved": bool(timeline.get("approved")),
+        "copy": outcome_copy(timeline),
+        "timeline_scope": str(timeline_scope or ""),
     }
 
 
@@ -771,6 +1168,7 @@ def player_html(
     autoplay: bool = True,
     speed: float = A.DEFAULT_SPEED,
     show_steps: bool = True,
+    timeline_scope: str | None = None,
 ) -> str:
     """Complete HTML document replaying one execution *timeline*.
 
@@ -778,22 +1176,37 @@ def player_html(
     on the finished execution so a Streamlit rerun never replays by surprise —
     the Play button then acts as Replay.  ``show_steps=False`` leaves the step
     list out for a host that renders its own action timeline.
+
+    ``timeline_scope`` names a timeline on the host page
+    (``console.timeline_html(rows, scope=...)``) that this playhead should mark
+    as it moves: the action being shown gets ``data-live`` while the player is
+    on it, and the mark clears at the end of the run.  Pass ``None`` (the
+    default) for a host with no timeline to follow.  A timeline the guard did
+    not verify is drawn as a *preview*: its heading, its tooltips and its
+    outcome line say simulated, never executed.
     """
     cs = int(cell_px)
     side = stage_px(cs)
+    approved = bool(timeline.get("approved"))
+    copy = outcome_copy(timeline)
     payload = json.dumps(
-        _payload(timeline, cs, autoplay, speed),
+        _payload(timeline, cs, autoplay, speed, timeline_scope),
         ensure_ascii=False,
         separators=(",", ":"),
     ).replace("</", "<\\/")
     world = timeline.get("world", {})
+    heading, step_word, play_word = kind_words(timeline)
+    # The controls follow the provenance: a preview has no verified action to
+    # offer, so its Step button must not promise one.
+    play_tip = f"Replay {play_word} (&amp;space)"
+    step_tip = f"Advance one {step_word} (&amp;S)"
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         f"{_css(cs)}"
         "</head><body>"
         f"<div class='gb-exec{' gb-exec-compact' if not show_steps else ''}'>"
         "<div class='gb-head'>"
-        "<span class='gb-head-title'>Execution playback</span>"
+        f"<span class='gb-head-title'>{heading}</span>"
         "<span class='gb-rule'></span>"
         "<span class='gb-stepnow' id='gb-stepnow'>ready</span>"
         "<span class='gb-readout' id='gb-readout'></span>"
@@ -816,13 +1229,18 @@ def player_html(
         )
         + "</div>"
         "<div class='gb-transport'>"
-        "<button type='button' class='gb-btn gb-btn-primary' id='gb-play'>&#9654; Play</button>"
-        "<button type='button' class='gb-btn' id='gb-reset'>&#10226; Reset</button>"
+        f"<button type='button' class='gb-btn gb-btn-primary' id='gb-play' "
+        f"title='{play_tip}'>&#9654; Play</button>"
+        f"<button type='button' class='gb-btn' id='gb-step' "
+        f"title='{step_tip}'>&#9197; Step</button>"
+        "<button type='button' class='gb-btn' id='gb-reset' "
+        "title='Return to the first cell (&amp;R)'>&#10226; Reset</button>"
         "<span class='gb-speed' role='group' aria-label='Playback speed'>"
         f"{_speed_buttons_html(speed)}</span>"
-        "<span class='gb-progress'><span id='gb-bar'></span></span>"
-        "<span class='gb-time' id='gb-time'>0.00 s / 0.00 s</span>"
+        "<span class='gb-progress' title='Playback progress at the selected speed'>"
+        "<span id='gb-bar'></span></span>"
         "</div>"
+        f"{_outcome_html(copy, autoplay=autoplay)}"
         "</div>"
         f"<script>window.__TL__ = {payload};{_JS}</script>"
         "</body></html>"

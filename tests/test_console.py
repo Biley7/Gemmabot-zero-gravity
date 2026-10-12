@@ -396,3 +396,31 @@ def test_the_timeline_row_count_is_the_plan_size():
     html = console.timeline_html(rows)
 
     assert f"data-actions='{len(PLAN)}'" in html
+
+
+# ---------------------------------------------------------------------------
+# Playhead scope — only the timeline a player owns can be highlighted
+# ---------------------------------------------------------------------------
+def test_a_timeline_carries_no_scope_unless_one_is_asked_for():
+    """Screens that render no player (Run History) get an unreachable timeline,
+    so no other screen's player can move their rows."""
+    rows = console.timeline_rows(PLAN)
+
+    assert "data-timeline" not in console.timeline_html(rows)
+
+
+def test_a_scoped_timeline_names_the_player_that_owns_it():
+    rows = console.timeline_rows(PLAN)
+    html = console.timeline_html(rows, scope="mission")
+
+    assert "data-timeline='mission'" in html
+    assert f"data-actions='{len(PLAN)}'" in html
+    # The rows themselves are untouched: the scope is on the container only.
+    assert html.count("data-timeline") == 1
+
+
+def test_an_empty_scoped_timeline_is_still_scoped():
+    html = console.timeline_html(console.timeline_rows(None), scope="mission")
+
+    assert "data-timeline='mission'" in html
+    assert "no actions" in html

@@ -25,6 +25,7 @@ from backend.guard import (
     canonical_actions,
     canonical_world,
     execute,
+    first_refusal,
     plan,
     register_planner,
     simulate,
@@ -171,6 +172,48 @@ def test_verify_run_reports_the_last_attempted_plan():
     assert report["ok"] is False
     assert report["actions"] == HAZARD
     assert verify_run(new_world(), None, []) is None
+
+
+def test_first_refusal_re_verifies_the_first_attempt_the_guard_refused():
+    """The refusal is reported from the verifier, not from a feedback string:
+    the same records a panel needs to name the action and the cell."""
+    history = [
+        {"attempt": 1, "actions": HAZARD, "ok": False,
+         "prompt": "go", "reply": "SECRET", "feedback": "blocked at [2, 0]"},
+        {"attempt": 2, "actions": DIRECT, "ok": True, "feedback": "ok"},
+    ]
+    refused = first_refusal(new_world(), history)
+
+    assert refused["attempt"] == 1
+    assert refused["verification"]["ok"] is False
+    checks = {entry["id"]: entry for entry in refused["verification"]["checks"]}
+    assert checks["no_collisions"]["ok"] is False
+    assert checks["no_collisions"]["data"]["cell"] == [3, 0]
+    # The transcript travelled with the record and is not in the answer.
+    assert "SECRET" not in json.dumps(refused)
+    assert "prompt" not in json.dumps(refused)
+
+
+def test_first_refusal_reports_nothing_when_nothing_was_refused():
+    assert first_refusal(new_world(), []) is None
+    assert first_refusal(new_world(), None) is None
+    assert first_refusal(new_world(), [{"attempt": 1, "actions": DIRECT, "ok": True}]) is None
+    # A refused record with no plan to re-verify: nothing to explain.
+    assert first_refusal(new_world(), [{"attempt": 1, "ok": False}]) is None
+    assert first_refusal(new_world(), [{"attempt": 1, "actions": [], "ok": False}]) is None
+    # A record the verifier does not agree with is not reported as a refusal.
+    assert first_refusal(
+        OPEN_WORLD, [{"attempt": 1, "actions": DIRECT, "ok": False}]
+    ) is None
+
+
+def test_first_refusal_does_not_touch_the_world_it_re_verifies_against():
+    world = new_world()
+    before = json.dumps(world, sort_keys=True)
+
+    first_refusal(world, [{"attempt": 1, "actions": HAZARD, "ok": False}])
+
+    assert json.dumps(world, sort_keys=True) == before
 
 
 # ---------------------------------------------------------------------------

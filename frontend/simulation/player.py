@@ -25,7 +25,27 @@ Timeline shape
       "reached":     bool  — the robot stands on the goal,
       "final_world": world after execution,
       "log":         raw simulator entries ({step, action, message}),
+      "kind":        "execution" | "preview" | "replay" (what this playback is),
+      "approved":    bool  — the guard reported a verified execution,
+      "refused":     the execution gate's reason, or None (nothing ran),
+      "final":       [x, y]  where the robot ended up,
+      "final_dir":   the direction it ended facing,
+      "planned":     actions the plan contains,
+      "actions_run": actions the simulator processed (incl. a halted one),
+      "halted_step": index of the action that stopped the run, or None,
+      "halted_label":  that action's label,
+      "halted_message": the simulator's own reason ("blocked at [2, 0]"),
+      "halted_at":     [x, y]  the cell the run stopped on, or None,
+      "unexecuted":  planned actions the run never reached,
     }
+
+The terminal keys are read off the same outcome as the events, so the player can
+state where a run ended, why it stopped and how many actions it never reached
+without guessing any of it.  ``approved`` and ``refused`` are the provenance,
+and they come from the guard's own result rather than from the caller: only
+``execute()`` reports ``verified``, and a refused approval reports why instead.
+Both exist so a preview, and an approved plan whose gate refused it, can never
+read on screen as an execution that happened.
 
 ``events`` are the animation keyframes: one 300 ms ``move`` per traversed
 cell, one ``turn`` for a direction change and a short ``hold`` beat where the
@@ -45,6 +65,23 @@ CELL_STEP_MS = A.CELL_STEP_MS
 TURN_MS = A.TURN_MS
 STEP_GAP_MS = A.STEP_GAP_MS
 HALT_MS = A.HALT_MS
+
+# What a playback *is* — the provenance the player words itself from.
+# ``execution``   a guard-verified plan really stepped the simulator;
+# ``preview``     an unapproved plan demonstrated in a lab (a "what if");
+# ``replay``      a plan from the run log, run through the simulator again.
+# A timeline that is not an execution must never read as one, and a replay must
+# not be described as an unapproved plan: the log says nothing about approval.
+KIND_EXECUTION = "execution"
+KIND_PREVIEW = "preview"
+KIND_REPLAY = "replay"
+KINDS: tuple[str, ...] = (KIND_EXECUTION, KIND_PREVIEW, KIND_REPLAY)
+
+
+def kind_of(timeline: dict) -> str:
+    """A timeline's playback kind, defaulting to the cautious one."""
+    kind = str((timeline or {}).get("kind") or KIND_PREVIEW)
+    return kind if kind in KINDS else KIND_PREVIEW
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +136,12 @@ def _capture_steps() -> tuple[list, Callable[[dict, dict], None]]:
     return captured, _capture
 
 
-def build_timeline(world: dict, actions: list[dict]) -> dict:
+def build_timeline(
+    world: dict,
+    actions: list[dict],
+    *,
+    kind: str = KIND_PREVIEW,
+) -> dict:
     """Simulate *actions* on a copy of *world* and return the replay timeline.
 
     Simulation/demonstration path: it may replay any plan, including one the
@@ -107,11 +149,18 @@ def build_timeline(world: dict, actions: list[dict]) -> dict:
     execution uses :func:`build_approved_timeline`, which the guard
     re-verifies before stepping.  The caller's world is never mutated;
     ``final_world`` carries the outcome.
+
+    *kind* says what the playback is, and the player words itself from it: the
+    Safety Lab demonstrates a plan (``KIND_PREVIEW``), the Run History replays
+    one out of the log (``KIND_REPLAY``).  Neither may be described as the
+    other, and neither is an execution.
     """
     initial = copy.deepcopy(world)
     captured, capture = _capture_steps()
     outcome = simulate(initial, actions or [], on_step=capture)
-    return _timeline(initial, outcome, captured)
+    return _timeline(
+        initial, outcome, captured, planned=len(actions or []), kind=kind
+    )
 
 
 def build_approved_timeline(approved: ApprovedPlan) -> dict:
@@ -123,15 +172,29 @@ def build_approved_timeline(approved: ApprovedPlan) -> dict:
     initial = copy.deepcopy(approved.world)
     captured, capture = _capture_steps()
     outcome = execute_approved(approved, on_step=capture)
-    return _timeline(initial, outcome, captured)
+    return _timeline(
+        initial,
+        outcome,
+        captured,
+        planned=len(approved.action_list()),
+        kind=KIND_EXECUTION,
+    )
 
 
 def _timeline(
     initial: dict,
     outcome: dict,
     captured: list[tuple[dict, dict]],
+    *,
+    planned: int,
+    kind: str,
 ) -> dict:
-    """Derive the player timeline from one simulated/executed outcome."""
+    """Derive the player timeline from one simulated/executed outcome.
+
+    *planned* is how many actions the plan held.  The simulator stops at the
+    first refusal, so only the plan's own length can say how many actions the
+    run never reached — counting the captured steps would report zero.
+    """
     events: list[dict] = []
     steps: list[dict] = []
     clock = 0
@@ -215,6 +278,9 @@ def _timeline(
         if index < len(captured):
             clock += STEP_GAP_MS
 
+    final_world = outcome["world"]
+    halted_step = next((step for step in steps if step["halted"]), None)
+
     return {
         "world": initial,
         "start": list(initial.get("robot", [0, 0])),
@@ -227,10 +293,23 @@ def _timeline(
         "duration_ms": clock,
         "cells": sum(1 for event in events if event["type"] == "move"),
         "ok": bool(outcome["ok"]),
-        "halted": next((step["halted"] for step in steps if step["halted"]), None),
+        "halted": halted_step["halted"] if halted_step else None,
         "reached": bool(outcome["reached"]),
-        "final_world": outcome["world"],
+        "final_world": final_world,
         "log": outcome["log"],
+        # Provenance + terminal facts, all read off the run's own outcome.
+        "kind": kind if kind in KINDS else KIND_PREVIEW,
+        "approved": outcome.get("verified") is True,
+        "refused": str(outcome.get("refused") or "") or None,
+        "final": list(final_world.get("robot", initial.get("robot", [0, 0]))),
+        "final_dir": final_world.get("dir", initial.get("dir", "E")),
+        "planned": max(int(planned), len(steps)),
+        "actions_run": len(steps),
+        "halted_step": int(halted_step["index"]) if halted_step else None,
+        "halted_label": str(halted_step["label"]) if halted_step else "",
+        "halted_message": str(halted_step["message"]) if halted_step else "",
+        "halted_at": list(final_world.get("robot", [0, 0])) if halted_step else None,
+        "unexecuted": max(int(planned), len(steps)) - len(steps),
     }
 
 

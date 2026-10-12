@@ -13,6 +13,9 @@ from frontend.components import colors as C
 
 PANELS = ("brain", "replay", "safety", "vision", "benchmark")
 PANEL_DIR = Path(__file__).resolve().parent.parent / "frontend" / "panels"
+# A panel that renders no markup of its own delegates it, and the delegate is
+# where the shared blocks have to come from.
+MARKUP_DELEGATES = {"brain": Path("frontend") / "console" / "guard.py"}
 
 
 def _rows():
@@ -182,8 +185,18 @@ def test_no_panel_defines_its_own_escaper_or_pluraliser(panel):
 
 @pytest.mark.parametrize("panel", PANELS)
 def test_every_panel_takes_its_blocks_from_the_shared_module(panel):
+    """Every panel's markup comes from the shared blocks — directly or through
+    the one module it delegates its markup to.  There is no third way."""
     src = (PANEL_DIR / f"{panel}.py").read_text(encoding="utf-8")
-    assert "from frontend.components.blocks import" in src
+    delegate = MARKUP_DELEGATES.get(panel)
+    if delegate is None:
+        assert "from frontend.components.blocks import" in src
+        return
+    root = PANEL_DIR.parent.parent
+    assert "frontend.console.guard" in src, f"{panel}.py does not say who renders it"
+    assert "from frontend.components.blocks import" in (
+        root / delegate
+    ).read_text(encoding="utf-8")
 
 
 # The class each panel keeps as its own hook (its own layout, its own tests).

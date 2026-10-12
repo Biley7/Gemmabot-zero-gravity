@@ -1,15 +1,18 @@
-"""Tests for the Gemma Brain panel (view model + HTML).
+"""Tests for the Guard console's display model (frontend/panels/brain.py).
 
-The panel is the app's structured readout of one planning run.  These tests
-pin that every field it shows comes from the run's real values, that an
-unproven check is never drawn as a pass, and that no model reasoning can reach
-the panel at all.
+The model is the app's structured readout of one planning run: the run's real
+numbers, the verifier's checks with the facts behind each one, and the first
+attempt the guard refused.  These tests pin that every value comes from the run
+itself, that an unproven check is never a pass, and that no model reasoning can
+reach the interface at all.  The interface built from this model — the verdict,
+the stage chain, the six outcomes, a refusal and its explanation — is tested in
+``tests/test_guard_interface.py``.
 """
 import inspect
 import json
 
 from backend.verifier.harness import VERIFICATION_CHECKS, verify_plan
-from frontend.components import colors as C
+from frontend.console import guard
 from frontend.panels import brain
 from gemmabot.simulator import new_world
 
@@ -26,6 +29,7 @@ PLAN = [
 PASSING_CHECKS = verify_plan(new_world(), PLAN)["checks"]
 
 CHECK_LABELS = [label for _, label in VERIFICATION_CHECKS]
+CHECK_IDS = [check_id for check_id, _ in VERIFICATION_CHECKS]
 
 
 def _meta(**overrides) -> dict:
@@ -181,105 +185,83 @@ def test_live_status_survives_an_incomplete_record():
 
 
 # ---------------------------------------------------------------------------
-# Panel HTML
+# The panel is the guard interface
 # ---------------------------------------------------------------------------
 
-def test_panel_renders_every_field_and_check():
-    html = brain.brain_panel_html(_meta())
+def test_the_panel_is_the_guard_interface():
+    """The panel supplies the display model; the interface does the rendering."""
+    meta = _meta()
 
-    assert "GemmaBot Guard" in html
-    for field_id in (
-        "model", "backend", "attempts", "plan", "verification", "simulation",
-        "execution", "status", "latency",
-    ):
-        assert f"data-field='{field_id}'" in html
-    for check_id, _ in VERIFICATION_CHECKS:
-        assert f"data-check='{check_id}'" in html
+    assert brain.brain_panel_html(meta) == guard.panel_html(meta)
+    assert "GemmaBot Guard" in brain.brain_panel_html(meta)
 
 
-def test_the_console_rows_are_the_runs_own_verdicts():
-    """VERIFICATION / SIMULATION / EXECUTION say only what really happened."""
-    passing = brain.brain_panel_html(_meta(executed=True, approved=True, reached=True))
-    assert "data-field='verification' data-value='PASSED'" in passing
-    assert "data-field='simulation' data-value='PASSED'" in passing
-    assert "data-field='execution' data-value='APPROVED'" in passing
-
-    # A verified plan that nothing simulated and nothing approved yet.
-    proposed = brain.brain_panel_html(_meta())
-    assert "data-field='verification' data-value='PASSED'" in proposed
-    assert "data-value='—'" in proposed
-    assert "data-field='simulation' data-value='PASSED'" not in proposed
-    assert "data-field='execution' data-value='APPROVED'" not in proposed
-
-    refused = brain.brain_panel_html(_meta(executed=True, halted="blocked", approved=True))
-    assert "data-field='simulation' data-value='FAILED'" in refused
-    assert "halted: blocked" in refused
-
-
-def test_nothing_verified_and_nothing_executed_is_not_drawn_as_a_pass():
-    html = brain.brain_panel_html(_meta(checks=None, status="repairing"))
-
-    assert "data-field='verification' data-value='—'" in html
-    assert "data-field='execution' data-value='—'" in html
-    assert "data-value='PASSED'" not in html
-    assert "data-value='APPROVED'" not in html
-
-
-def test_panel_marks_reflect_the_real_verdicts():
-    html = brain.brain_panel_html(_meta())
-
-    assert html.count("data-ok='true'") == 4
-    assert html.count("data-ok='false'") == 0
-    assert "✓" in html
-
-
-def test_unproven_checks_are_drawn_as_unproven():
-    html = brain.brain_panel_html(_meta(checks=None))
-
-    assert html.count("data-ok='none'") == 4
-    assert "✓" not in html
-    assert "–" in html
-
-
-def test_failing_checks_are_drawn_as_failures():
+def test_every_check_carries_the_structured_facts_behind_it():
+    """A failing check keeps its ``data`` — the action index, the command and the
+    cell.  Reading those instead of a detail string is what lets the interface
+    name a failure without quoting anything a model wrote."""
     failed = verify_plan(new_world(), [{"cmd": "forward", "steps": 5}])["checks"]
-    html = brain.brain_panel_html(_meta(checks=failed))
+    by_id = {entry["id"]: entry for entry in _meta(checks=failed)["checks"]}
 
-    assert "data-ok='false'" in html
-    assert "✗" in html
+    assert by_id["no_collisions"]["ok"] is False
+    assert by_id["no_collisions"]["data"]["action_index"] == 1
+    assert by_id["no_collisions"]["data"]["cell"] == [3, 0]
+    assert isinstance(by_id["no_collisions"]["data"]["action"], dict)
+    # A check that passed carries no failure facts.
+    assert by_id["valid_actions"]["data"] == {}
 
 
-def test_panel_escapes_untrusted_text():
-    html = brain.brain_panel_html(
-        _meta(detail="<script>alert('x')</script>", checks=None)
+def test_a_check_that_carries_no_data_reports_an_empty_mapping():
+    meta = _meta(checks=[{"id": "in_bounds", "ok": False, "detail": "outside"}])
+
+    by_id = {entry["id"]: entry for entry in meta["checks"]}
+    assert by_id["in_bounds"]["data"] == {}
+
+
+def test_the_refusal_is_the_first_refused_attempt_and_its_verifier_records():
+    refused = verify_plan(new_world(), [{"cmd": "forward", "steps": 5}])
+    meta = _meta(attempts=2, refusal={"attempt": 1, "verification": refused})
+
+    assert meta["refusal"]["attempt"] == 1
+    assert [entry["id"] for entry in meta["refusal"]["checks"]] == CHECK_IDS
+    assert meta["refusal"]["checks"][2]["data"]["cell"] == [3, 0]
+
+
+def test_nothing_is_reported_as_a_refusal_unless_the_verifier_refused_it():
+    """A run that passed, a record with no verdict and a malformed record are
+    all ``None``: the interface gets no block it cannot stand behind."""
+    assert _meta()["refusal"] is None
+    assert _meta(refusal=None)["refusal"] is None
+    assert _meta(refusal="junk")["refusal"] is None
+    assert _meta(refusal={"attempt": 1})["refusal"] is None
+    passed = verify_plan(new_world(), PLAN)
+    assert _meta(refusal={"attempt": 1, "verification": passed})["refusal"] is None
+
+
+def test_run_metadata_forwards_the_refusal_it_was_given():
+    refused = verify_plan(new_world(), [{"cmd": "forward", "steps": 5}])
+
+    meta = _run_metadata(refusal={"attempt": 1, "verification": refused})
+
+    assert meta["refusal"]["attempt"] == 1
+    assert meta["refusal"]["checks"][2]["ok"] is False
+
+
+def _run_metadata(**overrides) -> dict:
+    """``run_metadata`` with one real verified plan, overridable."""
+    kwargs = dict(
+        backend_label="API (Gemini)",
+        model="gemma-4-26b-a4b-it",
+        verification={**verify_plan(new_world(), PLAN), "actions": PLAN},
+        actions=PLAN,
+        attempts=1,
+        max_tries=3,
+        latency=1.25,
+        steps=19,
+        reached=True,
     )
-
-    assert "<script>alert" not in html
-    assert "&lt;script&gt;" in html
-
-
-def test_panel_is_self_contained():
-    html = brain.brain_panel_html(_meta())
-
-    assert "<script src" not in html.lower()
-    assert "<link" not in html.lower()
-    assert "@import" not in html.lower()
-    assert "http://" not in html.lower()
-    assert "https://" not in html.lower()
-
-
-def test_panel_styles_come_from_the_design_tokens():
-    passing = brain.brain_panel_html(_meta())
-    failing = brain.brain_panel_html(
-        _meta(checks=verify_plan(new_world(), [{"cmd": "forward", "steps": 5}])["checks"])
-    )
-
-    for token in (C.SUCCESS, C.TEXT_MUTED, C.BORDER_SUBTLE, C.TELEMETRY_VALUE, C.BG_SURFACE):
-        assert token in passing
-    assert C.ERROR in failing
-    # Design-system parts, not hand-rolled containers.
-    assert "gb-panel" in passing
-    assert "gb-status-chip" in passing
+    kwargs.update(overrides)
+    return brain.run_metadata(**kwargs)
 
 
 # ---------------------------------------------------------------------------

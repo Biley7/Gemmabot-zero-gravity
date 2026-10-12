@@ -11,6 +11,7 @@ import types
 from frontend.components import blocks
 from frontend.components import colors as C
 from frontend.components import theme
+from frontend.components import typography as T
 
 CSS = theme._css()
 # Whitespace-normalised, for assertions about a rule written across lines.
@@ -171,3 +172,77 @@ def test_the_spinner_label_is_styled_like_the_rest_of_the_telemetry():
     spinner = CSS.split('[data-testid="stSpinner"] > div')[1].split("}")[0]
     assert C.TEXT_SECONDARY in spinner
     assert "font-family" in spinner      # the label matches the other telemetry
+
+
+# ---------------------------------------------------------------------------
+# Errors: a failure has to read as one, in the console's own type
+# ---------------------------------------------------------------------------
+
+def test_an_alert_is_off_the_streamlit_default_look():
+    """The failure this lab exists to report is a refused plan, so an alert must
+    not stay an unstyled Streamlit box."""
+    assert '[data-testid="stAlert"]' in CSS
+    alert = CSS.split('[data-testid="stAlert"]')[1].split("}")[0]
+    assert T.FONT_MONO in alert
+    assert f"{T.SIZE_SM}px" in alert
+    assert "border-style: solid" in alert
+
+
+def test_every_alert_kind_carries_its_own_colour():
+    for cls, (bg, border, fg) in (
+        ("stSuccess", (C.SUCCESS_BG, C.SUCCESS_BORDER, C.SUCCESS)),
+        ("stError", (C.ERROR_BG, C.ERROR_BORDER, C.ERROR)),
+        ("stWarning", (C.WARNING_BG, C.WARNING_BORDER, C.WARNING)),
+    ):
+        rule = CSS.split(f".{cls} {{")[1].split("}")[0]
+        assert bg in rule and border in rule and fg in rule, cls
+
+
+# ---------------------------------------------------------------------------
+# Disabled: a control that cannot be used must not look like it can
+# ---------------------------------------------------------------------------
+
+def test_a_disabled_button_drops_the_accent_fill():
+    """"Run plan" is disabled on an empty instruction, and used to keep its full
+    accent fill while inert — the most prominent control looked clickable."""
+    assert ".stButton button:disabled" in CSS
+    rule = CSS.split(".stButton button:disabled,")[1].split("}")[0]
+    assert C.BG_SURFACE in rule
+    assert C.BORDER_SUBTLE in rule
+    assert C.TEXT_MUTED in rule
+    assert "not-allowed" in rule
+
+
+def test_the_disabled_rule_beats_the_primary_fill_it_overrides():
+    """Equal specificity means source order decides: disabled must come last."""
+    assert CSS.index(".stButton button:disabled") > CSS.index(
+        'button[kind="primary"]'
+    )
+
+
+def test_hovering_an_inert_control_does_not_brighten_it():
+    assert ".stButton button:disabled:hover" in CSS
+
+
+# ---------------------------------------------------------------------------
+# Live playhead: the action the execution player is showing right now
+# ---------------------------------------------------------------------------
+
+def test_the_live_timeline_row_is_drawn_like_the_current_one():
+    """The bridge marks a row while the playhead is on it; the row needs a rule
+    of its own or the mark would be invisible."""
+    assert '.gb-tl-row[data-live="true"]' in CSS
+    rule = CSS.split('.gb-tl-row[data-live="true"] {')[1].split("}")[0]
+    assert C.ACCENT_BLUE in rule
+    assert C.RUNNING_BG in rule
+
+
+def test_the_live_row_wins_over_the_standing_one_by_source_order():
+    """Both rules have the same specificity, so source order decides which one
+    the browser keeps — the live highlight must be declared last."""
+    assert CSS.index('.gb-tl-row[data-live="true"]') > CSS.index(
+        '.gb-tl-row[data-current="true"]'
+    )
+    assert CSS.index('.gb-tl-row[data-live="true"] .gb-tl-idx') > CSS.index(
+        '.gb-tl-row[data-current="true"] .gb-tl-idx'
+    )

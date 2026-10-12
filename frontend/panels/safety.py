@@ -1,6 +1,12 @@
-"""Safety Lab — demonstrating the verifier and the repair loop.
+"""Safety Lab — the GemmaBot Guard put on trial: the verifier and the repair loop.
 
 Owner: FRONTEND.  No Streamlit import, no network, no AI.
+
+This is the same guard the Mission screen reports on, opened up.  The readouts
+speak the guard's own vocabulary (``frontend.console.guard``), so a lab run and
+a mission run describe the same decision with the same words: the outcome card
+reads ✓ VALID PLAN when the first proposal passed and ✓ REPAIRED PLAN VERIFIED
+when a refused proposal was repaired into one that passed.
 
 What is real here
 -----------------
@@ -38,6 +44,7 @@ from frontend.components.blocks import (
     fact_cards,
     plural as _plural,
 )
+from frontend.console import guard as guard_console
 from frontend.simulation import player as playback
 
 # ── The loop's shape (the pipeline diagram) ───────────────────────────────────
@@ -269,7 +276,10 @@ def facts_rows(summary_data: dict) -> list[dict]:
         {
             "id": "success",
             "label": "Success",
-            "value": "✓ Safe" if success.get("ok") else "✕ Not resolved",
+            "value": (
+                ("✓ REPAIRED PLAN VERIFIED" if repairs.get("count") else "✓ VALID PLAN")
+                if success.get("ok") else "✕ NOT RESOLVED"
+            ),
             "detail": success.get("label", ""),
             "state": "success" if success.get("ok") else "error",
         },
@@ -291,7 +301,7 @@ def replays(world: dict, history: list[dict] | None) -> list[dict]:
             continue
         attempt = int(record.get("attempt") or position + 1)
         accepted = bool(record.get("ok"))
-        timeline = playback.build_timeline(world, actions)
+        timeline = playback.build_timeline(world, actions, kind=playback.KIND_PREVIEW)
         out.append({
             "attempt": attempt,
             "ok": accepted,
@@ -439,4 +449,4 @@ def report_html(stage_list: list[dict], summary_data: dict) -> str:
         + DS.section_title("Events")
         + events_html(stage_list)
     )
-    return DS.panel(body, title="Safety lab")
+    return DS.panel(body, title=guard_console.PRODUCT)

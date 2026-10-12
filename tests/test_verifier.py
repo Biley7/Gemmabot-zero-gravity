@@ -1,6 +1,6 @@
 """Tests for the verifier: dry_run's verdict and the structured checks.
 
-verify_plan() is what the Gemma Brain panel displays, so these tests pin two
+verify_plan() is what the GemmaBot Guard displays, so these tests pin two
 things: each check reports a fact the simulation really observed, and the
 panel's verdict can never disagree with the verdict that gates the repair loop.
 """
