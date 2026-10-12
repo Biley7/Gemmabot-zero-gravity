@@ -391,27 +391,35 @@ def test_vision_lab_reads_a_map_validates_it_and_loads_it_into_the_simulator():
     assert at.session_state["last_run"]["source"] == "vision"
     assert at.session_state["vision_loaded"] is False
 
-    # Three columns, three checks (all passing on the accepted reading), and the
-    # animated flow waiting on the load.
+    # Three columns — input image, detected world, validation — five checks (all
+    # passing on the accepted reading), and the story waiting on the load.
     rendered = "\n".join(element.value for element in at.markdown)
     assert "Vision lab" in rendered
     assert rendered.count("data-column=") == 3
     assert "data-column='image'" in rendered
-    assert "data-column='vision'" in rendered
     assert "data-column='world'" in rendered
-    assert rendered.count("data-check=") == 3
-    assert "data-check='valid' data-ok='true'" in rendered
-    assert "data-check='in_bounds' data-ok='true'" in rendered
-    assert "data-check='reachable' data-ok='true'" in rendered
+    assert "data-column='validation'" in rendered
+    assert rendered.count("data-check=") == 5
+    for check_id in ("bounds", "robot", "goal", "overlaps", "reachable"):
+        assert f"data-check='{check_id}' data-ok='true'" in rendered
+    assert "data-verdict='accepted'" in rendered
+    assert "✓ WORLD ACCEPTED" in rendered
+    # The raw reply lives in its own expander, not in the world column.
     assert "World it proposed" in rendered        # the reading, verbatim
     assert "data-attempt='1'" in rendered
+    # The reader really was scripted, and the panel says so.
+    assert "data-kind='scripted'" in rendered
+    assert "no image left this app" in rendered
     assert "data-stage='image' data-state='done'" in rendered
+    assert "data-stage='vision' data-state='done'" in rendered
     assert "data-stage='world' data-state='done'" in rendered
-    assert "data-stage='simulator' data-state='active'" in rendered
+    assert "data-stage='validation' data-state='done'" in rendered
+    assert "data-stage='simulation' data-state='active'" in rendered
+    assert "data-stage='execution' data-state='pending'" in rendered
     # The map is still the default: reading a map does not adopt it.
     assert at.session_state["world"] == new_world()
 
-    _button(at, "Load into simulator").click().run()
+    _button(at, "Load into Mission").click().run()
     assert not at.exception, [element.value for element in at.exception]
 
     assert at.session_state["world"] == new_world()
@@ -420,10 +428,63 @@ def test_vision_lab_reads_a_map_validates_it_and_loads_it_into_the_simulator():
     assert at.session_state["map_source"]["scanned"] == new_world()
 
     rendered = "\n".join(element.value for element in at.markdown)
-    assert "data-stage='simulator' data-state='done'" in rendered
-    assert rendered.count("data-stage=") == 3
+    assert "data-stage='simulation' data-state='done'" in rendered
+    assert "data-stage='execution' data-state='active'" in rendered
+    assert rendered.count("data-stage=") == 6
     # The loaded world is a copy: executing on it cannot write back into the lab.
     assert at.session_state["world"] is not lab["world"]
+
+
+def test_a_refused_reading_is_shown_as_world_rejected_with_its_own_reason():
+    """One attempt, so the dry reader's off-grid misread is the final one."""
+    at = _run_app()
+    _number_input(at, "Max tries (plan & vision)").set_value(1).run()
+
+    _button(at, "Read map").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+    assert at.session_state["vision_result"]["world"] is None
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "data-verdict='rejected'" in rendered
+    assert "✕ WORLD REJECTED" in rendered
+    # The exact deterministic sentence, from the validator itself.
+    assert "goal position [7, 8] is outside the 8×8 grid" in rendered
+    assert "data-check='bounds' data-ok='false'" in rendered
+    assert "data-check='overlaps' data-ok='true'" in rendered
+    assert "data-check='reachable' data-ok='none'" in rendered
+    # Nothing was accepted, so nothing may be loaded.
+    assert "data-verdict='accepted'" not in rendered
+    assert _button(at, "Load into Mission").disabled is True
+    # The refused world is drawn, and named as refused rather than as the map.
+    assert "refused, so it is not the active map" in rendered
+    assert at.session_state["vision_loaded"] is False
+    assert at.session_state["map_name"] == "default"
+
+
+def test_loading_a_scanned_world_clears_the_previous_plans_results():
+    """The guarantee the load makes: no previous plan may look like this world's."""
+    from gemmabot.simulator import new_world
+
+    at = _run_app()
+    _button(at, "Read map").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    # A plan ran on the previous (default) world, and the console is showing it.
+    at.session_state["text_result"] = {"plan": [{"cmd": "forward"}]}
+    at.session_state["replay"] = {"steps": [], "world": new_world()}
+    at.session_state["last_run"] = {"source": "plan", "status": "Executed"}
+    at.session_state["safety_result"] = {"stages": []}
+
+    _button(at, "Load into Mission").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    assert at.session_state["text_result"] is None
+    assert at.session_state["replay"] is None
+    assert at.session_state["safety_result"] is None
+    assert at.session_state["last_run"] is None
+    # ... and the story's last stage is back to waiting on a real plan.
+    rendered = "\n".join(element.value for element in at.markdown)
+    assert "data-stage='execution' data-state='active'" in rendered
 
 
 def test_vision_lab_shows_unproven_checks_before_any_reading():
@@ -432,18 +493,31 @@ def test_vision_lab_shows_unproven_checks_before_any_reading():
     assert at.session_state["vision_result"] is None
 
     rendered = "\n".join(element.value for element in at.markdown)
-    assert rendered.count("data-check=") == 3
-    assert rendered.count("data-ok='none'") == 3      # never shown as a pass
-    assert "no validated reading yet" in rendered
-    # An image is already in hand (the built-in sample), so World is the stage
-    # waiting on real work and the simulator is still pending.
+    assert rendered.count("data-check=") == 5
+    assert rendered.count("data-ok='none'") == 5      # never shown as a pass
+    assert "no reading to check yet" in rendered
+    # Nothing has been read, so the panel claims no live vision result.
+    assert "data-kind='none'" in rendered
+    assert "data-verdict='none'" in rendered
+    assert "NOT VALIDATED" in rendered
+    # An image is already in hand (the built-in sample), so the vision model is
+    # the stage waiting on real work and the rest are still pending.
     assert "data-stage='image' data-state='done'" in rendered
-    assert "data-stage='world' data-state='active'" in rendered
-    assert "data-stage='simulator' data-state='pending'" in rendered
+    assert "data-stage='vision' data-state='active'" in rendered
+    assert "data-stage='world' data-state='pending'" in rendered
+    assert "data-stage='validation' data-state='pending'" in rendered
     # With nothing validated there is nothing to load.
-    load = _button(at, "Load into simulator")
+    load = _button(at, "Load into Mission")
     assert load.disabled is True
     assert at.session_state["vision_loaded"] is False
+
+
+def _number_input(at: AppTest, label: str):
+    """The one number input carrying *label* (main body or sidebar)."""
+    for widget in at.number_input:
+        if widget.label == label:
+            return widget
+    raise AssertionError(f"no number input labelled {label!r}")
 
 
 def _selectbox(at: AppTest, label: str):

@@ -1158,6 +1158,65 @@ hr {{
     .gb-guard-verdict-label {{ font-size: {T.SIZE_LG}px; }}
 }}
 
+/* ── Vision Lab: the world verdict ───────────────────────────────────────
+   The detector's proposal is judged in code, so the verdict is the loudest
+   thing in the right-hand column: ✓ WORLD ACCEPTED or ✕ WORLD REJECTED, with
+   the validator's own sentence underneath it. */
+.gb-vision-verdict {{
+    display: flex;
+    flex-direction: column;
+    gap: {S.px(S.XS)};
+    padding: {S.px(S.SM)} {S.px(S.MD)};
+    border: {S.BORDER_WIDTH}px solid {C.BORDER_DEFAULT};
+    border-left-width: 3px;
+    border-radius: {S.px(S.RADIUS_SM)};
+    margin-bottom: {S.px(S.SM)};
+}}
+.gb-vision-verdict-label {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_MD}px;
+    font-weight: {T.WEIGHT_SEMIBOLD};
+    letter-spacing: {T.TRACKING_WIDE};
+}}
+.gb-vision-verdict-detail {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_XS}px;
+    color: {C.TEXT_SECONDARY};
+}}
+.gb-vision-verdict[data-verdict="accepted"] {{
+    background: {C.SUCCESS_BG};
+    border-color: {C.SUCCESS_BORDER};
+    border-left-color: {C.SUCCESS};
+}}
+.gb-vision-verdict[data-verdict="accepted"] .gb-vision-verdict-label {{ color: {C.SUCCESS}; }}
+.gb-vision-verdict[data-verdict="rejected"],
+.gb-vision-verdict[data-verdict="unproven"] {{
+    background: {C.ERROR_BG};
+    border-color: {C.ERROR_BORDER};
+    border-left-color: {C.ERROR};
+}}
+.gb-vision-verdict[data-verdict="rejected"] .gb-vision-verdict-label,
+.gb-vision-verdict[data-verdict="unproven"] .gb-vision-verdict-label {{ color: {C.ERROR}; }}
+.gb-vision-verdict[data-verdict="none"] {{
+    background: {C.BG_SURFACE};
+    border-color: {C.BORDER_SUBTLE};
+    border-left-color: {C.BORDER_DEFAULT};
+}}
+.gb-vision-verdict[data-verdict="none"] .gb-vision-verdict-label {{ color: {C.TEXT_SECONDARY}; }}
+/* The exact deterministic cause, printed verbatim under a rejection. */
+.gb-vision-reason {{
+    font-family: {T.FONT_MONO};
+    font-size: {T.SIZE_SM}px;
+    color: {C.ERROR};
+    background: {C.ERROR_BG};
+    border: {S.BORDER_WIDTH}px solid {C.ERROR_BORDER};
+    border-radius: {S.px(S.RADIUS_SM)};
+    padding: {S.px(S.SM)};
+    margin-bottom: {S.px(S.MD)};
+    white-space: pre-wrap;
+    word-break: break-word;
+}}
+
 /* ── Console command block ───────────────────────────────────────────────
    The left column of the Mission screen: a label, a readout, an action. */
 .gb-command {{

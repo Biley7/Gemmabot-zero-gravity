@@ -219,11 +219,13 @@ def test_read_map_never_stores_image_bytes_in_history():
 # check_world_report — the same verdict, reported per check
 # ---------------------------------------------------------------------------
 
-def test_the_report_reports_the_three_checks_the_lab_shows():
+def test_the_report_reports_the_five_checks_the_lab_shows():
     report = check_world_report(new_world())
     assert [(check["id"], check["label"]) for check in report["checks"]] == [
-        ("valid", "Valid"),
-        ("in_bounds", "Inside bounds"),
+        ("bounds", "8×8 bounds"),
+        ("robot", "Robot valid"),
+        ("goal", "Goal valid"),
+        ("overlaps", "No overlaps"),
         ("reachable", "Reachable"),
     ]
 
@@ -232,7 +234,7 @@ def test_a_good_world_passes_every_check_and_carries_no_failure_data():
     report = check_world_report(new_world())
     assert report["ok"] is True
     assert report["reason"] == "ok"
-    assert [check["ok"] for check in report["checks"]] == [True, True, True]
+    assert [check["ok"] for check in report["checks"]] == [True] * 5
     assert all(check["data"] == {} for check in report["checks"])
     assert all(check["detail"] for check in report["checks"])
 
@@ -240,10 +242,13 @@ def test_a_good_world_passes_every_check_and_carries_no_failure_data():
 def test_an_off_grid_goal_is_a_bounds_failure_with_the_cell_in_the_data():
     report = check_world_report(_world(goal=[7, 8]))
     by_id = {check["id"]: check for check in report["checks"]}
-    assert by_id["in_bounds"]["ok"] is False
-    assert by_id["in_bounds"]["data"] == {"cell": [7, 8], "field": "goal"}
-    # The shape really is well formed, and reachability was never asked.
-    assert by_id["valid"]["ok"] is True
+    assert by_id["bounds"]["ok"] is False
+    assert by_id["bounds"]["data"] == {"cell": [7, 8], "field": "goal"}
+    # The cell itself is a real one, so nothing else about it is in question,
+    # and reachability was never asked.
+    assert by_id["robot"]["ok"] is True
+    assert by_id["goal"]["ok"] is True
+    assert by_id["overlaps"]["ok"] is True
     assert by_id["reachable"]["ok"] is None
     assert by_id["reachable"]["data"] == {}
     assert report["reason"] == "goal position [7, 8] is outside the 8×8 grid"
@@ -252,9 +257,9 @@ def test_an_off_grid_goal_is_a_bounds_failure_with_the_cell_in_the_data():
 def test_an_off_grid_wall_names_the_wall_it_failed_on():
     report = check_world_report(_world(walls=[[3, 0], [8, 8]]))
     by_id = {check["id"]: check for check in report["checks"]}
-    assert by_id["in_bounds"]["ok"] is False
-    assert by_id["in_bounds"]["data"]["field"] == "walls[1]"
-    assert by_id["in_bounds"]["data"]["cell"] == [8, 8]
+    assert by_id["bounds"]["ok"] is False
+    assert by_id["bounds"]["data"]["field"] == "walls[1]"
+    assert by_id["bounds"]["data"]["cell"] == [8, 8]
 
 
 def test_an_unreachable_goal_fails_only_reachability():
@@ -264,49 +269,95 @@ def test_an_unreachable_goal_fails_only_reachability():
     }
     report = check_world_report(world)
     by_id = {check["id"]: check for check in report["checks"]}
-    assert by_id["valid"]["ok"] is True
-    assert by_id["in_bounds"]["ok"] is True
+    assert [by_id[c]["ok"] for c in ("bounds", "robot", "goal", "overlaps")] == [True] * 4
     assert by_id["reachable"]["ok"] is False
     assert by_id["reachable"]["data"] == {"robot": [0, 0], "goal": [7, 7], "walls": 3}
     assert "unreachable" in report["reason"]
 
 
-def test_a_goal_on_a_wall_fails_validity_and_leaves_reachability_unproven():
+def test_a_goal_on_a_wall_is_an_overlap_and_leaves_reachability_unproven():
     report = check_world_report(_world(goal=[3, 1]))
     by_id = {check["id"]: check for check in report["checks"]}
-    assert by_id["valid"]["ok"] is False
-    assert by_id["valid"]["data"] == {"cell": [3, 1], "field": "goal"}
-    assert by_id["in_bounds"]["ok"] is True          # extents were still checked
+    assert by_id["overlaps"]["ok"] is False
+    assert by_id["overlaps"]["data"] == {"cell": [3, 1], "field": "goal"}
+    assert by_id["bounds"]["ok"] is True          # extents were still checked
     assert by_id["reachable"]["ok"] is None
     assert "not evaluated" in by_id["reachable"]["detail"]
 
 
-def test_start_equals_goal_fails_validity_and_leaves_reachability_unproven():
-    report = check_world_report(_world(goal=[0, 0]))
+def test_a_robot_on_a_wall_is_an_overlap_and_leaves_reachability_unproven():
+    report = check_world_report(_world(robot=[3, 1]))
     by_id = {check["id"]: check for check in report["checks"]}
-    assert by_id["valid"]["ok"] is False
+    assert by_id["overlaps"]["ok"] is False
+    assert by_id["overlaps"]["data"] == {"cell": [3, 1], "field": "robot"}
+    assert by_id["robot"]["ok"] is True           # its cell and heading are real
     assert by_id["reachable"]["ok"] is None
 
 
+def test_a_wall_listed_twice_is_the_same_obstacle_not_an_overlap():
+    """The simulator tests membership in a set of cells: a repeat is the same wall."""
+    report = check_world_report(_world(walls=[[3, 0], [3, 0], [3, 1]]))
+    by_id = {check["id"]: check for check in report["checks"]}
+    assert by_id["overlaps"]["ok"] is True
+    assert by_id["overlaps"]["detail"] == (
+        "the robot and the goal are on free cells — no obstacle stands under either"
+    )
+    assert report["ok"] is True
+
+
+def test_start_equals_goal_fails_the_goal_check_and_leaves_reachability_unproven():
+    report = check_world_report(_world(goal=[0, 0]))
+    by_id = {check["id"]: check for check in report["checks"]}
+    assert by_id["goal"]["ok"] is False
+    assert by_id["goal"]["data"] == {"cell": [0, 0], "field": "goal"}
+    assert by_id["robot"]["ok"] is True
+    assert by_id["reachable"]["ok"] is None
+
+
+def test_a_two_int_cell_is_a_shape_failure_where_its_cell_belongs():
+    """A cell that is not a coordinate is not a bounds problem — it is not a cell."""
+    report = check_world_report(_world(robot=[0.0, 0.0]))
+    by_id = {check["id"]: check for check in report["checks"]}
+    assert by_id["robot"]["ok"] is False
+    assert by_id["robot"]["data"] == {"field": "robot"}
+    # Nothing measured an extent: bounds stays unproven, never a pass.
+    assert by_id["bounds"]["ok"] is None
+    assert "not evaluated" in by_id["bounds"]["detail"]
+
+
 @pytest.mark.parametrize(
-    "malformed",
+    "malformed,failing",
     [
-        None, "not a world", [], {}, {"robot": [0, 0]},
-        {"robot": [0, 0], "dir": "E", "goal": [1, 1]},
-        {"robot": [0, 0], "dir": "Q", "goal": [1, 1], "walls": []},
-        {"robot": [0.0, 0.0], "dir": "E", "goal": [1, 1], "walls": []},
-        {"robot": [0, 0], "dir": "E", "goal": [1, 1], "walls": "lots"},
+        (None, ("robot",)),
+        ("not a world", ("robot",)),
+        ([], ("robot",)),
+        ({}, ("robot", "goal", "overlaps")),
+        ({"robot": [0, 0]}, ("robot", "goal", "overlaps")),
+        ({"robot": [0, 0], "dir": "E", "goal": [1, 1]}, ("overlaps",)),
+        ({"robot": [0, 0], "dir": "Q", "goal": [1, 1], "walls": []}, ("robot",)),
+        ({"robot": [0.0, 0.0], "dir": "E", "goal": [1, 1], "walls": []}, ("robot",)),
+        ({"robot": [0, 0], "dir": "E", "goal": [1, 1], "walls": "lots"}, ("overlaps",)),
     ],
 )
-def test_a_reading_that_is_not_a_world_reports_the_later_checks_unproven(malformed):
+def test_a_reading_that_is_not_a_world_fails_only_the_checks_that_own_it(
+    malformed, failing
+):
+    """A field the reading lacks is its owner's failure; no check invents a pass."""
     report = check_world_report(malformed)
     by_id = {check["id"]: check for check in report["checks"]}
-    assert by_id["valid"]["ok"] is False
     assert report["ok"] is False
-    for check_id in ("in_bounds", "reachable"):
-        assert by_id[check_id]["ok"] is None, check_id
-        assert "not evaluated" in by_id[check_id]["detail"]
-        assert by_id[check_id]["data"] == {}
+    assert report["reason"] != "ok"
+    assert set(by_id) == {
+        "bounds", "robot", "goal", "overlaps", "reachable"
+    }
+    assert {check_id for check_id, check in by_id.items()
+            if check["ok"] is False} == set(failing)
+    for check_id, check in by_id.items():
+        if check_id in failing:
+            continue
+        assert check["ok"] is None, check_id
+        assert "not evaluated" in check["detail"]
+        assert check["data"] == {}
 
 
 def test_reachability_unproven_details_name_the_problem_that_blocked_it():
@@ -341,7 +392,7 @@ def test_check_world_always_agrees_with_the_report():
         assert check_world(world) == (report["ok"], report["reason"])
 
 
-def test_report_ok_is_exactly_all_three_checks_passing():
+def test_report_ok_is_exactly_all_five_checks_passing():
     for world in _report_corpus():
         report = check_world_report(world)
         assert report["ok"] is all(check["ok"] is True for check in report["checks"])

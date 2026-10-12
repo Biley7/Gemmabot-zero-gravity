@@ -166,15 +166,15 @@ def test_a_record_without_a_plan_is_not_replayable():
 def test_a_corrupt_world_is_reported_with_the_validators_own_sentence():
     can_replay, reason = replay.replayable(_record(world={"robot": [0, 0]}))
     assert can_replay is False
-    assert "fails valid" in reason
-    assert "missing required key" in reason
+    assert "fails 8×8 bounds" in reason
+    assert "not evaluated — the reading is not a world yet" in reason
 
 
 def test_an_out_of_grid_world_is_not_replayable():
     can_replay, reason = replay.replayable(_record(world={**new_world(),
                                                          "robot": [8, 0]}))
     assert can_replay is False
-    assert "inside bounds" in reason.lower()
+    assert "fails 8×8 bounds" in reason.lower()
     assert "outside the 8×8 grid" in reason
 
 

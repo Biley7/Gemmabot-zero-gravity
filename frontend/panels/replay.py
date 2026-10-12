@@ -63,7 +63,11 @@ _STATE_COLORS: dict[str, str] = {
 
 # The two world checks a world must pass to be *runnable*.  Reachability is not
 # a precondition for replaying a plan that already ran, so it is not required.
-_REPLAY_CHECKS: tuple[str, ...] = ("valid", "in_bounds")
+# The world checks a logged run must have passed for the simulator to re-run it:
+# a world the validator refused is not replayable, and these are the four that
+# establish the world itself.  (``reachable`` is about the plan's world being
+# solvable, not about the simulator being able to move in it.)
+_REPLAY_CHECKS: tuple[str, ...] = ("bounds", "robot", "goal", "overlaps")
 
 
 

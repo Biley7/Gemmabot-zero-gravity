@@ -30,7 +30,8 @@ model reasoning — structured metadata, not a transcript.
 
 The Vision Lab (``frontend.panels.vision``) reads an image into a world model,
 shows the reading next to the world it proposes, validates that world
-(✓ Valid · ✓ Inside bounds · ✓ Reachable) and loads it into the simulator.  The
+(✓ 8×8 bounds · ✓ Robot valid · ✓ Goal valid · ✓ No overlaps · ✓ Reachable) and
+loads it into the simulator as the active map.  The
 verdicts are ``map_vision.check_world_report``'s; the world the simulator adopts
 is the one the validator accepted.
 
@@ -1172,12 +1173,13 @@ if HAVE_MAPVISION:
         st.markdown(
             f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
             f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.LG)}'>"
-            "An image becomes a world, and the world is checked before it can "
-            "reach the simulator. Every verdict below is the validator's "
-            "(<code>map_vision.check_world_report</code>), the same one the retry "
-            "loop uses. Dry mode scripts the reply only: the image is not sent to "
-            "a model, and the parse, the retry, the three checks and the load are "
-            "the real pipeline."
+            "A hand-drawn environment becomes a world model, and that world is "
+            "checked in code before it can reach the simulator. Every verdict "
+            "below is the validator's (<code>map_vision.check_world_report</code>), "
+            "the same one the retry loop uses; the sentence under a rejection is "
+            "its own reason, unedited. Dry mode scripts the reply only: no image "
+            "leaves this app, and the parse, the retry, the five checks and the "
+            "load are the real pipeline."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1290,10 +1292,35 @@ if HAVE_MAPVISION:
         lab = st.session_state.vision_result
         world = lab["world"] if lab else None
         loaded = bool(st.session_state.get("vision_loaded"))
-        checks_rows = vision.checks(world)
+        # A refused reading still has a world to explain — the last one the model
+        # proposed, which is exactly what the validator refused.  ``world`` (the
+        # accepted reading) stays the world that can be loaded; ``proposed`` is
+        # what the right-hand column judges, so a rejection is reported as
+        # ✕ WORLD REJECTED with the validator's own reason instead of being
+        # thrown away as "nothing to check yet".
+        reading_items = vision.readings((lab or {}).get("history") or [])
+        proposed = world
+        if proposed is None and reading_items:
+            proposed = reading_items[-1]["world"]
+        # One validation call: the rows, the reason under a rejection and the
+        # banner all come from this dict, so they cannot disagree.
+        result = vision.validation(proposed)
+        decision = vision.world_verdict(result)
+        checks_rows = result["rows"]
         passed = sum(1 for row in checks_rows if row["passed"])
+        # What the reader really did — no live-accuracy claim without a live call.
+        request = vision.request_kind(
+            ran=lab is not None,
+            backend=(lab or {}).get("backend"),
+            dry_backend=engine.DRY_BACKEND,
+        )
+        # Whether a plan has actually run on the active map: the story's last
+        # stage, and the reason a stale result can never be shown as this world's.
+        executed = loaded and bool(st.session_state.get("text_result"))
 
-        col_image, col_vision, col_world = st.columns(3, gap="large")
+        col_image, col_world, col_validation = st.columns(
+            [1.05, 1.25, 1.1], gap="large"
+        )
 
         # ── Left: the image the reading is made from ──────────────────────
         with col_image:
@@ -1348,71 +1375,92 @@ if HAVE_MAPVISION:
                     unsafe_allow_html=True,
                 )
 
-        # ── Middle: what Gemma Vision returned, verbatim ──────────────────
-        with col_vision:
-            st.markdown(
-                DS.section_title(vision.COLUMN_TITLES["vision"]),
-                unsafe_allow_html=True,
-            )
-            if lab is None:
-                body = (
-                    f"<div style='font-family:{T.FONT_MONO};"
-                    f"font-size:{T.SIZE_SM}px;color:{C.TEXT_MUTED}'>"
-                    "No reading yet — the raw reply, the world it proposes and the "
-                    "verdict on it appear here.</div>"
-                )
-            else:
-                body = vision.meta_html(
-                    lab["reader"],
-                    attempts=lab["attempts"],
-                    max_tries=lab["max_tries"],
-                    latency=lab["latency"],
-                    scripted=lab["backend"] == engine.DRY_BACKEND,
-                ) + vision.readings_html(vision.readings(lab["history"]))
-                body += (
-                    f"<div style='margin-top:{S.px(S.SM)}'>"
-                    + (
-                        DS.status_chip("World accepted", "success")
-                        if world is not None
-                        else DS.status_chip("Map rejected", "error")
-                    )
-                    + "</div>"
-                )
-            st.markdown(vision.column_html("vision", body), unsafe_allow_html=True)
-            if lab is not None and world is None and lab["error"]:
-                st.error(lab["error"])
-
-        # ── Right: the world model the reading proposes ───────────────────
+        # ── Middle: the world the reading produced ────────────────────────
         with col_world:
             st.markdown(
                 DS.section_title(vision.COLUMN_TITLES["world"]),
                 unsafe_allow_html=True,
             )
-            body = (
-                DS.section_title("Validation")
-                + vision.checks_html(checks_rows)
-                + f"<div style='height:{S.px(S.LG)}'></div>"
-                + vision.facts_html(vision.world_rows(world))
-            )
-            if world is not None:
-                # The grid is drawn at its designed cell size; in a narrow column
-                # it scrolls inside its own box rather than stretching the row.
-                body += (
-                    f"<div style='height:{S.px(S.LG)}'></div>"
+            if world is None:
+                # A refused reading is shown as what it is: the world the model
+                # proposed, which is not the active map and cannot be loaded.
+                body = (
+                    empty_state(
+                        "No accepted world yet.",
+                        "Read the image: the robot, its heading, the goal, the "
+                        "walls and the grid coordinates appear here — drawn from "
+                        "the reading, never from a default map.",
+                    )
+                    if proposed is None else
+                    f"<div style='font-family:{T.FONT_MONO};"
+                    f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY};"
+                    f"margin-bottom:{S.px(S.SM)}'>This is the world the last "
+                    "reading proposed.  It was refused, so it is not the active "
+                    "map and cannot be loaded.</div>"
+                    + vision.facts_html(vision.world_rows(proposed))
+                    + f"<div style='height:{S.px(S.LG)}'></div>"
                     + ui_helpers.grid_legend_html()
+                    + "<div style='overflow-x:auto'>"
+                    + ui_helpers.world_grid_html(proposed, cell_px=S.CELL_SIZE)
+                    + "</div>"
+                )
+            else:
+                body = (
+                    vision.facts_html(vision.world_rows(world))
+                    + f"<div style='height:{S.px(S.LG)}'></div>"
+                    + ui_helpers.grid_legend_html()
+                    # The grid carries the coordinates: both axes are labelled by
+                    # world_grid_html, and it scrolls inside its own box rather
+                    # than stretching the row.
                     + "<div style='overflow-x:auto'>"
                     + ui_helpers.world_grid_html(world, cell_px=S.CELL_SIZE)
                     + "</div>"
                 )
             st.markdown(vision.column_html("world", body), unsafe_allow_html=True)
 
-        # ── Load into simulator ───────────────────────────────────────────
+        # ── Right: deterministic validation of that world ─────────────────
+        with col_validation:
+            st.markdown(
+                DS.section_title(vision.COLUMN_TITLES["validation"]),
+                unsafe_allow_html=True,
+            )
+            body = vision.verdict_html(decision) + vision.checks_html(checks_rows)
+            if lab is not None:
+                body += vision.meta_html(
+                    lab["reader"],
+                    attempts=lab["attempts"],
+                    max_tries=lab["max_tries"],
+                    latency=lab["latency"],
+                    request=request,
+                )
+            else:
+                body += vision.meta_html(
+                    engine.backend_label(backend),
+                    request="none",
+                )
+            st.markdown(
+                vision.column_html("validation", body), unsafe_allow_html=True
+            )
+            # A reply that never became a world has no validator sentence to
+            # quote, so it owes the user the reason it could not be parsed.
+            if lab is not None and proposed is None and lab["error"]:
+                st.error(lab["error"])
+
+        # ── The raw reply, kept out of the story's middle column ──────────
+        if lab is not None:
+            with st.expander(vision.REPLY_TITLE):
+                st.markdown(
+                    vision.readings_html(vision.readings(lab["history"])),
+                    unsafe_allow_html=True,
+                )
+
+        # ── Load into Mission ─────────────────────────────────────────────
         if world is None:
             st.button(
-                "Load into simulator",
+                vision.LOAD_LABEL,
                 key="vision_load",
                 disabled=True,
-                help="Disabled until a reading has passed every world check.",
+                help="Disabled until a reading has passed all five world checks.",
             )
             st.caption(
                 "Nothing to load: no reading has passed validation yet."
@@ -1422,51 +1470,72 @@ if HAVE_MAPVISION:
             # instantiated by the time this renders, and only a callback may
             # move it.
             st.button(
-                "Load into simulator",
+                vision.LOAD_LABEL,
                 key="vision_load",
                 type="primary",
                 on_click=_load_vision_into_simulator,
                 help="Adopts the validated world as the active map and clears "
-                     "the results measured on the previous one.",
+                     "every plan result measured on the previous one — a "
+                     "previous plan must never look like this world's.",
             )
             if loaded:
                 st.markdown(
                     DS.status_chip(
-                        f"Loaded — the simulator is on {_map_label('scanned')}",
+                        f"Loaded — Mission is on {_map_label('scanned')}",
                         "success",
                     ),
                     unsafe_allow_html=True,
                 )
             else:
                 st.caption(
-                    "The reading is validated but not loaded: the simulator is "
+                    "The reading is validated but not loaded: Mission is "
                     f"still on {_map_label(st.session_state.map_name)}."
                 )
 
-        # ── Animate: Image → World → Simulator ────────────────────────────
+        # ── Animate: the six steps of the product story ───────────────────
         st.markdown(DS.section_title("Pipeline"), unsafe_allow_html=True)
         st.caption(
-            "Each stage lights because the step itself happened, not on a timer: "
-            "an image is in hand, a reading passed the checks, that world is the "
-            "active map."
+            "Hand-drawn environment → Vision model → World representation → "
+            "Deterministic validation → Simulation → Robot execution. Each "
+            "stage lights because the step itself happened, not on a timer."
         )
+        # A reply came back; a world was parsed out of it.  Both are facts the
+        # reading itself carries, not inferences from whether it was accepted.
+        replied = any(item["reply"] for item in reading_items)
+        parsed = any(item["world"] is not None for item in reading_items)
         st.markdown(
             vision.flow_html(
                 vision.flow_stages(
                     has_image=held_image is not None,
+                    replied=replied,
+                    parsed=parsed,
                     world_ok=world is not None,
                     loaded=loaded,
+                    executed=executed,
                     image_detail=(
                         f"{held_image['name']} · "
                         f"{len(held_image['bytes']) / 1024:.1f} kB"
                         if held_image else ""
                     ),
+                    vision_detail=(
+                        f"{lab['reader']} · {request} reading" if lab else ""
+                    ),
                     world_detail=(
-                        f"reading passed {passed} of {len(checks_rows)} checks "
+                        f"{len(world.get('walls') or [])} obstacles · robot "
+                        f"{world.get('robot')} facing {world.get('dir')} · goal "
+                        f"{world.get('goal')}"
+                        if world is not None else ""
+                    ),
+                    validation_detail=(
+                        f"{passed} of {len(checks_rows)} checks passed "
                         f"on attempt {lab['attempts']}"
                         if lab is not None and world is not None else ""
                     ),
                     sim_detail=f"active map: {_map_label(st.session_state.map_name)}",
+                    execution_detail=(
+                        "a plan has run on this world" if executed
+                        else "no plan has run on this world yet"
+                    ),
                 )
             ),
             unsafe_allow_html=True,

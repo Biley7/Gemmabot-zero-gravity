@@ -1,37 +1,68 @@
-"""Vision Lab — image → world model → simulator.
+"""Vision Lab — a hand-drawn environment becomes a validated, executable world.
 
 Owner: FRONTEND.  No Streamlit import, no network, no AI.
+
+The product story the lab tells, in order:
+
+    Hand-drawn environment
+        ↓
+    Vision model
+        ↓
+    World representation
+        ↓
+    Deterministic validation
+        ↓
+    Simulation
+        ↓
+    Robot execution
+
+Left is the image, the middle is the world that was read out of it, the right is
+the validator's five checks, and loading a validated world into Mission is what
+finishes the story.  The model never decides anything: it proposes a world, and
+``map_vision.check_world_report`` accepts or refuses it in code.
 
 What is real here
 -----------------
 The reading, the validation and the load.  ``map_vision.read_map`` makes the
 call and parses the reply; each verdict is ``map_vision.check_world_report``'s
-(✓ Valid · ✓ Inside bounds · ✓ Reachable); and the world that reaches the
-simulator is the very one the validator was shown.  The flow
-(Image ↓ World ↓ Simulator) is driven by that state rather than by a timer: a
-stage is lit because the thing itself happened — an image is in hand, a reading
-really passed all three checks, a world really is the active map.
+(✓ 8×8 bounds · ✓ Robot valid · ✓ Goal valid · ✓ No overlaps · ✓ Reachable); the
+sentence under ✕ WORLD REJECTED is that report's own ``reason``, unedited; and
+the world that reaches the simulator is the very one the validator was shown.
+Every stage of the story is driven by state rather than by a timer: a stage is
+lit because the thing itself happened — an image is in hand, a reply came back, a
+world was parsed, all five checks passed, that world is the active map, a plan
+has run on it.
 
-In dry mode the *reply* is scripted (``engine.dry_vision_ask``): the image is
-never sent anywhere and the reader is labelled scripted everywhere it surfaces.
-The parser, the retry with the failure reason in the prompt, the three checks and
-the load into the simulator are the real pipeline.
+Honesty rules, enforced here rather than trusted
+------------------------------------------------
+* **No live-accuracy claim without a live request.**  The reader's status says
+  *scripted — no image left this app* only when the reply really was scripted,
+  and *live request* only when a real model call was made.  Neither is inferred
+  from the outcome of the reading.
+* **The verdict is the validator's.**  :func:`world_verdict` reads the same
+  report the checklist is drawn from, so ✕ WORLD REJECTED can never disagree
+  with the rows under it, and an unproven check is never a tick.
 
 Public surface
 --------------
-STAGES                              the flow: Image, World, Simulator
+STORY / STAGES                      the six steps of the product story
 COLUMN_TITLES                       headings for the three columns
-WORLD_CHECKS                        the validator's three checks
-checks(world)                       three verdict rows for a proposed world
-world_rows(world)                   robot, goal, walls, direction
+REPLY_TITLE                         the expander that holds the raw reply
+WORLD_CHECKS                        the validator's five checks
+validation(world)                   the report, the rows and the verdict
+checks(world)                       the five verdict rows for a proposed world
+world_verdict(result)               ✓ WORLD ACCEPTED / ✕ WORLD REJECTED
+world_rows(world)                   robot, heading, goal, walls
 readings(history)                   one record per attempted reading
-flow_stages(...)                    the flow's per-stage state, from real facts
+reader_status(...)                  what the reader really did, from real state
+flow_stages(...)                    the story's per-stage state, from real facts
 sample_image_bytes(world)           a PNG of a world, in the prompt's own terms
 image_rows(...)                     metadata for the uploaded-image column
 checks_html(rows)                   the validation list
+verdict_html(decision)              the world verdict banner
 facts_html(rows)                    the readout grid (world or image metadata)
-readings_html(items)                the Gemma Vision column
-flow_html(stages)                   the animated Image ↓ World ↓ Simulator diagram
+readings_html(items)                the raw reply, the world it proposed, the verdict
+flow_html(stages)                   the animated six-step story diagram
 meta_html(...)                      one line describing the reading run
 column_html(kind, body)             frames one lab column as a panel
 """
@@ -53,17 +84,36 @@ from frontend.components.blocks import (
 )
 from frontend.simulation.ui_helpers import attempt_cards, short_json
 
-# ── The flow the lab animates ────────────────────────────────────────────────
-STAGES: tuple[str, ...] = ("Image", "World", "Simulator")
+# ── The product story the lab tells, in order ────────────────────────────────
+STORY: tuple[str, ...] = (
+    "Hand-drawn environment",
+    "Vision model",
+    "World representation",
+    "Deterministic validation",
+    "Simulation",
+    "Robot execution",
+)
+
+# The flow diagram's stages — the same six steps, in the same order.  ``STAGES``
+# is kept as the name the rest of the app and the tests already read.
+STAGES: tuple[str, ...] = STORY
 
 # Headings for the three columns, left to right.
 COLUMN_TITLES: dict[str, str] = {
-    "image": "Uploaded image",
-    "vision": "Gemma Vision",
-    "world": "World model",
+    "image": "Input image",
+    "world": "Detected world",
+    "validation": "Validation",
 }
 
-_STAGE_KEYS: tuple[str, ...] = ("image", "world", "simulator")
+# The expander that holds the model's own reply and the world it proposed.
+REPLY_TITLE: str = "Gemma Vision"
+
+# What the button that finishes the story says.
+LOAD_LABEL: str = "Load into Mission"
+
+_STAGE_KEYS: tuple[str, ...] = (
+    "image", "vision", "world", "validation", "simulation", "execution",
+)
 
 # Per-stage glyphs.  A done stage has really happened, an active one is the next
 # piece of real work, a pending one is waiting on it.
@@ -120,62 +170,136 @@ def _bytes_label(size: int | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Validation — the three verdicts, straight from the validator
+# Validation — the five verdicts, straight from the validator
 # ---------------------------------------------------------------------------
 
+def _row(check: dict) -> dict:
+    """One validator check record as a display row."""
+    ok = check["ok"]
+    return {
+        "id": check["id"],
+        "label": check["label"],
+        "ok": ok,
+        "mark": _MARKS[ok],
+        "state": _MARK_STATES[ok],
+        "detail": check["detail"],
+        "data": check.get("data") or {},
+        "passed": ok is True,
+    }
+
+
+def validation(world: dict | None) -> dict:
+    """The whole validation of a proposed world: rows, reason and verdict.
+
+    One call, one source.  The rows, the sentence under ✕ WORLD REJECTED and the
+    banner's own state all come from this dict, so they cannot disagree: the
+    reason is ``check_world_report``'s ``reason`` verbatim — the first problem it
+    found, in its own words.
+
+    ``world=None`` means no reading has passed validation yet, which is a
+    different statement from a failed check:
+    ``{"rows": [...], "reason": "", "ok": None, "evaluated": False}``.
+    """
+    if not isinstance(world, dict):
+        return {
+            "rows": [
+                {
+                    "id": check_id, "label": label, "ok": None,
+                    "mark": _MARKS[None], "state": "neutral",
+                    "detail": "no reading to check yet", "data": {}, "passed": False,
+                }
+                for check_id, label in WORLD_CHECKS
+            ],
+            "reason": "",
+            "ok": None,
+            "evaluated": False,
+        }
+
+    report = check_world_report(world)
+    return {
+        "rows": [_row(check) for check in report["checks"]],
+        "reason": report["reason"],
+        "ok": report["ok"],
+        "evaluated": True,
+    }
+
+
 def checks(world: dict | None) -> list[dict]:
-    """The three validation verdicts for a proposed world.
+    """The five validation verdicts for a proposed world.
 
     Straight from ``map_vision.check_world_report``.  A check the validator could
     not evaluate is ``ok=None`` and is reported as unproven ("–") with the reason
     it could not be asked — never as a pass.  ``world=None`` means no reading has
     passed validation yet, which is a different statement from a failed check.
     """
-    if not isinstance(world, dict):
-        return [
-            {
-                "id": check_id,
-                "label": label,
-                "ok": None,
-                "mark": _MARKS[None],
-                "state": "neutral",
-                "detail": "no validated reading yet",
-                "data": {},
-                "passed": False,
-            }
-            for check_id, label in WORLD_CHECKS
-        ]
+    return validation(world)["rows"]
 
-    report = check_world_report(world)
-    rows: list[dict] = []
-    for check in report["checks"]:
-        ok = check["ok"]
-        rows.append({
-            "id": check["id"],
-            "label": check["label"],
-            "ok": ok,
-            "mark": _MARKS[ok],
-            "state": _MARK_STATES[ok],
-            "detail": check["detail"],
-            "data": check.get("data") or {},
-            "passed": ok is True,
-        })
-    return rows
+
+def world_verdict(result: dict) -> dict:
+    """✓ WORLD ACCEPTED / ✕ WORLD REJECTED / NOT VALIDATED.
+
+    Read off :func:`validation`.  REJECTED carries ``reason`` — the validator's
+    own first problem, unedited — which is what the panel prints as the exact
+    deterministic cause.  A reading that was never evaluated is not a rejection:
+    nothing was refused, because nothing was checked.
+    """
+    rows = result["rows"]
+    failing = [row for row in rows if row["ok"] is False]
+    if failing:
+        return {
+            "key": "rejected",
+            "label": "✕ WORLD REJECTED",
+            "state": "error",
+            "reason": result["reason"],
+            "check": failing[0]["id"],
+            "check_label": failing[0]["label"],
+            "detail": f"refused by the {failing[0]['label'].lower()} check",
+        }
+    if result["ok"] is True:
+        return {
+            "key": "accepted",
+            "label": "✓ WORLD ACCEPTED",
+            "state": "success",
+            "reason": "",
+            "check": "",
+            "check_label": "",
+            "detail": f"all {len(rows)} checks passed — this world may be loaded",
+        }
+    if not result["evaluated"]:
+        return {
+            "key": "none",
+            "label": "NOT VALIDATED",
+            "state": "neutral",
+            "reason": "",
+            "check": "",
+            "check_label": "",
+            "detail": "no reading has been validated yet",
+        }
+    return {
+        "key": "unproven",
+        "label": "✕ NOT PROVEN",
+        "state": "error",
+        "reason": result["reason"],
+        "check": "",
+        "check_label": "",
+        "detail": "the validator could not prove every check — nothing was accepted",
+    }
 
 
 def world_rows(world: dict | None) -> list[dict]:
-    """The four things the world model displays: robot, goal, walls, direction.
+    """The four things the detected world displays: robot, heading, goal, walls.
 
     Values are the world's own; nothing is inferred.  With no validated reading
-    yet every row says so instead of showing a default map's numbers.
+    yet every row says so instead of showing a default map's numbers.  The grid
+    coordinates are the map itself — ``world_grid_html`` labels both axes.
     """
     if not isinstance(world, dict):
         return [
             {"id": key, "label": label, "value": "—", "detail": "not read yet",
              "state": "neutral"}
             for key, label in (
-                ("robot", "Robot"), ("goal", "Goal"),
-                ("walls", "Walls"), ("direction", "Direction"),
+                ("robot", "Robot"), ("heading", "Heading"),
+                ("goal", "Goal"), ("walls", "Walls"),
             )
         ]
 
@@ -189,6 +313,11 @@ def world_rows(world: dict | None) -> list[dict]:
             "detail": "start cell", "state": "neutral",
         },
         {
+            "id": "heading", "label": "Heading",
+            "value": f"{heading} {arrow}".strip(),
+            "detail": "from the robot's own arrow", "state": "neutral",
+        },
+        {
             "id": "goal", "label": "Goal",
             "value": _cell_text(world.get("goal")),
             "detail": "target cell", "state": "success",
@@ -198,11 +327,6 @@ def world_rows(world: dict | None) -> list[dict]:
             "value": str(len(walls)),
             "detail": _plural(len(walls), "obstacle cell"),
             "state": "neutral",
-        },
-        {
-            "id": "direction", "label": "Direction",
-            "value": f"{heading} {arrow}".strip(),
-            "detail": "robot heading", "state": "neutral",
         },
     ]
 
@@ -237,32 +361,48 @@ def readings(history: list[dict] | None) -> list[dict]:
 def flow_stages(
     *,
     has_image: bool,
+    replied: bool = False,
+    parsed: bool = False,
     world_ok: bool,
     loaded: bool,
+    executed: bool = False,
     image_detail: str = "",
+    vision_detail: str = "",
     world_detail: str = "",
+    validation_detail: str = "",
     sim_detail: str = "",
+    execution_detail: str = "",
 ) -> list[dict]:
-    """The flow's three stages, from the real state of each one.
+    """The story's six stages, from the real state of each one.
 
     A stage is ``done`` when the thing itself happened, ``active`` when it is the
-    next piece of real work, ``pending`` after that.  ``has_image``, ``world_ok``
-    and ``loaded`` are facts the caller reads off the pipeline — an image in
-    hand, a reading that passed all three checks, a world that is the active map.
-    Lateness is enforced (a stage cannot be done while an earlier one is not), so
-    the diagram can never claim the simulator holds a world that was never read.
+    next piece of real work, ``pending`` after that.  Every argument is a fact
+    the caller reads off the pipeline — an image in hand, a reply that came back,
+    a world that was parsed out of it, a reading that passed all five checks, a
+    world that is the active map, a plan that actually ran on it.  Lateness is
+    enforced (a stage cannot be done while an earlier one is not), so the diagram
+    can never claim the robot executed a plan on a world that was never read.
     """
     image_done = bool(has_image)
-    world_done = image_done and bool(world_ok)
-    sim_done = world_done and bool(loaded)
-    done = (image_done, world_done, sim_done)
+    vision_done = image_done and bool(replied)
+    world_done = vision_done and bool(parsed)
+    validation_done = world_done and bool(world_ok)
+    sim_done = validation_done and bool(loaded)
+    execution_done = sim_done and bool(executed)
+    done = (image_done, vision_done, world_done, validation_done, sim_done,
+            execution_done)
 
     defaults = (
         (image_detail or "image in hand", "waiting for an image"),
-        (world_detail or "reading passed all three checks",
+        (vision_detail or "the model answered", "no request has been made yet"),
+        (world_detail or "a world was parsed from the reply",
+         "no world has been parsed yet"),
+        (validation_detail or "reading passed all five checks",
          "no reading has passed validation yet"),
         (sim_detail or "this world is the active map",
          "load the validated world to finish"),
+        (execution_detail or "a plan ran on this world",
+         "run a plan in Mission to finish"),
     )
 
     stages: list[dict] = []
@@ -396,6 +536,44 @@ def _meta_line(field_id: str, label: str, value: str) -> str:
     )
 
 
+# What the reader really did, in three states.  "none" means no request has been
+# made at all, which is not the same claim as a request that came back scripted.
+REQUEST_KINDS: tuple[str, ...] = ("none", "scripted", "live")
+_REQUEST_LABELS: dict[str, str] = {
+    "none": "no request yet — the image has not been read",
+    "scripted": "scripted reader — no image left this app, so this is not a "
+                "live vision result",
+    "live": "live vision request — a real model call was made for this reading",
+}
+_REQUEST_STATES: dict[str, str] = {
+    "none": "neutral", "scripted": "warning", "live": "success",
+}
+
+
+def request_kind(*, ran: bool, backend: str | None, dry_backend: str | None) -> str:
+    """``none`` / ``scripted`` / ``live`` — from the run that really happened.
+
+    A live claim requires both a reading that ran and a backend that is not the
+    dry reader; anything else is scripted or has not happened yet.  ``dry_backend``
+    is the caller's own name for the scripted reader, passed in rather than
+    imported so this module stays UI-only.
+    """
+    if not ran:
+        return "none"
+    return "scripted" if dry_backend is not None and backend == dry_backend else "live"
+
+
+def reader_status(kind: str) -> dict:
+    """The model/backend status line's verdict, from real runtime state."""
+    kind = kind if kind in REQUEST_KINDS else "none"
+    return {
+        "kind": kind,
+        "label": _REQUEST_LABELS[kind],
+        "state": _REQUEST_STATES[kind],
+        "live": kind == "live",
+    }
+
+
 def meta_html(
     reader: str,
     *,
@@ -403,19 +581,27 @@ def meta_html(
     max_tries: int = 0,
     latency: float | None = None,
     scripted: bool = False,
+    request: str | None = None,
 ) -> str:
-    """One line describing the reading run (escaped, token-styled)."""
+    """One line describing the reading run (escaped, token-styled).
+
+    ``request`` is the honest status of this reading — ``none`` / ``scripted`` /
+    ``live``; it is derived by :func:`request_kind` from the run that happened,
+    never from whether the reading was a good one.  ``scripted`` is kept as the
+    older boolean flag and is honoured when ``request`` is not given.
+    """
+    kind = request if request in REQUEST_KINDS else (
+        "scripted" if scripted else "live"
+    )
+    status = reader_status(kind)
     latency_label = f"{latency:.2f} s" if latency is not None else "—"
     bits = [
         _meta_line("reader", "Reader", reader),
         _meta_line("attempts", "attempts", f"{int(attempts)} / {int(max_tries)}"),
         _meta_line("latency", "latency", latency_label),
+        f"<span data-meta='request' data-kind='{_e(status['kind'])}' "
+        f"style='color:{_STATE_COLORS[status['state']]}'>{_e(status['label'])}</span>",
     ]
-    if scripted:
-        bits.append(
-            f"<span data-meta='scripted' style='color:{C.WARNING}'>"
-            "scripted replies — the image is not sent to a model</span>"
-        )
     return (
         f"<div class='gb-vision-meta' style='font-family:{T.FONT_MONO};"
         f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY};display:flex;"
@@ -424,8 +610,29 @@ def meta_html(
     )
 
 
+def verdict_html(decision: dict) -> str:
+    """The world verdict banner: ✓ WORLD ACCEPTED / ✕ WORLD REJECTED + the cause.
+
+    REJECTED always carries the validator's own ``reason`` — the exact
+    deterministic problem — and never a paraphrase.
+    """
+    reason = decision.get("reason") or ""
+    cause = (
+        f"<div class='gb-vision-reason' data-check='{_e(decision.get('check', ''))}'>"
+        f"{_e(reason)}</div>"
+        if reason else ""
+    )
+    return (
+        f"<div class='gb-vision-verdict' data-verdict='{_e(decision['key'])}' "
+        f"title='{_e(decision.get('detail', ''))}'>"
+        f"<span class='gb-vision-verdict-label'>{_e(decision['label'])}</span>"
+        f"<span class='gb-vision-verdict-detail'>{_e(decision.get('detail', ''))}</span>"
+        f"</div>" + cause
+    )
+
+
 def checks_html(rows: list[dict]) -> str:
-    """The validation list: ✓ Valid · ✓ Inside bounds · ✓ Reachable."""
+    """The validation list: the five checks, each with its own verdict."""
     out: list[str] = []
     for row in rows:
         color = _STATE_COLORS[row["state"]]

@@ -9,7 +9,8 @@ check_world(world) -> (bool, str)
     Thin wrapper over check_world_report(): (report["ok"], report["reason"]).
 
 check_world_report(world) -> {"ok", "reason", "checks"}
-    The same verdict, reported per check — ✓ Valid, ✓ Inside bounds,
+    The same verdict, reported per check — ✓ 8×8 bounds, ✓ Robot valid,
+    ✓ Goal valid, ✓ No overlaps,
     ✓ Reachable.  A check that could not be evaluated is ok=None (unproven),
     never a pass.
 
@@ -53,19 +54,45 @@ from gemmabot.simulator import DIRS
 # 1.  check_world — pure code, no AI
 # ---------------------------------------------------------------------------
 
-# The three verdicts the Vision Lab displays for a proposed world, in the
-# order they are always reported:
-#     ✓ Valid · ✓ Inside bounds · ✓ Reachable
-# ``valid`` covers the reading's shape (robot / heading / goal / walls) and that
-# the two endpoints are real, distinct cells; ``in_bounds`` is the grid extent;
-# ``reachable`` is the BFS search.  A check that could not be evaluated is
-# ``ok=None`` (unproven) and is never reported as a pass — the same convention
-# ``backend.verifier.harness.verify_plan`` uses.
+# The five verdicts the Vision Lab displays for a proposed world, in the order
+# they are always reported:
+#     ✓ 8×8 bounds · ✓ Robot valid · ✓ Goal valid · ✓ No overlaps · ✓ Reachable
+# Every finding has exactly one home, so no two checks can disagree about the
+# same problem:
+#
+# ``bounds``     every coordinate is inside the grid — robot, goal, every wall
+# ``robot``      the robot is a real cell pair and its heading is one of N/E/S/W
+# ``goal``       the goal is a real cell pair, distinct from the robot's start
+# ``overlaps``   no cell holds two things — a repeated wall, or a wall under the
+#                robot or the goal
+# ``reachable``  BFS finds a path from the robot to the goal
+#
+# A check that could not be evaluated is ``ok=None`` (unproven) and is never
+# reported as a pass — the same convention
+# ``backend.verifier.harness.verify_plan`` uses.  A field the reading does not
+# carry is a failure of the check that owns it ("missing required key: 'robot'"
+# fails ``robot``), while the checks that depend on it stay unproven.
 WORLD_CHECKS: tuple[tuple[str, str], ...] = (
-    ("valid", "Valid"),
-    ("in_bounds", "Inside bounds"),
+    ("bounds", "8×8 bounds"),
+    ("robot", "Robot valid"),
+    ("goal", "Goal valid"),
+    ("overlaps", "No overlaps"),
     ("reachable", "Reachable"),
 )
+
+# Which check owns each required field of a world.  A missing or malformed
+# field is that check's failure — never attributed to a check that only reads
+# the value.
+FIELD_OWNER: dict[str, str] = {
+    "robot": "robot",
+    "dir": "robot",
+    "goal": "goal",
+    "walls": "overlaps",
+}
+
+# The checks that own a *cell*: their shape findings mean no extent can be
+# measured, so ``bounds`` is unproven rather than guessed.
+_CELL_OWNERS: tuple[str, ...] = ("robot", "goal", "overlaps")
 
 
 def _plural(count: int, noun: str) -> str:
@@ -91,18 +118,19 @@ def _world_findings(world: Any) -> tuple[list[dict], dict | None]:
     # ── Type guard ────────────────────────────────────────────────────────
     if not isinstance(world, dict):
         return (
-            [_finding("valid", f"world must be a dict, got {type(world).__name__}")],
+            [_finding("robot", f"world must be a dict, got {type(world).__name__}")],
             None,
         )
 
     # ── Required keys ─────────────────────────────────────────────────────
     required = {"robot": list, "dir": str, "goal": list, "walls": list}
     for key, expected_type in required.items():
+        owner = FIELD_OWNER[key]
         if key not in world:
-            findings.append(_finding("valid", f"missing required key: '{key}'"))
+            findings.append(_finding(owner, f"missing required key: '{key}'"))
         elif not isinstance(world[key], expected_type):
             findings.append(_finding(
-                "valid",
+                owner,
                 f"'{key}' must be {expected_type.__name__}, "
                 f"got {type(world[key]).__name__}",
                 field=key,
@@ -119,7 +147,7 @@ def _world_findings(world: Any) -> tuple[list[dict], dict | None]:
     for name, cell in (("robot", robot), ("goal", goal)):
         if len(cell) != 2 or not all(isinstance(v, int) for v in cell):
             findings.append(_finding(
-                "valid", f"'{name}' must be a list of two ints, got {cell!r}",
+                FIELD_OWNER[name], f"'{name}' must be a list of two ints, got {cell!r}",
                 field=name,
             ))
 
@@ -128,14 +156,14 @@ def _world_findings(world: Any) -> tuple[list[dict], dict | None]:
         if (not isinstance(w, list) or len(w) != 2
                 or not all(isinstance(v, int) for v in w)):
             findings.append(_finding(
-                "valid", f"walls[{i}] must be a list of two ints, got {w!r}",
+                "overlaps", f"walls[{i}] must be a list of two ints, got {w!r}",
                 field=f"walls[{i}]",
             ))
 
     # ── heading ───────────────────────────────────────────────────────────
     if heading not in DIRS:
         findings.append(_finding(
-            "valid", f"heading '{heading}' is not valid; expected one of {DIRS}",
+            "robot", f"heading '{heading}' is not valid; expected one of {DIRS}",
             field="dir",
         ))
 
@@ -148,42 +176,48 @@ def _world_findings(world: Any) -> tuple[list[dict], dict | None]:
 
     if not in_bounds(robot):
         findings.append(_finding(
-            "in_bounds",
+            "bounds",
             f"robot position {robot} is outside the {SIZE}×{SIZE} grid",
             cell=list(robot), field="robot",
         ))
     if not in_bounds(goal):
         findings.append(_finding(
-            "in_bounds",
+            "bounds",
             f"goal position {goal} is outside the {SIZE}×{SIZE} grid",
             cell=list(goal), field="goal",
         ))
     for i, w in enumerate(walls):
         if not in_bounds(w):
             findings.append(_finding(
-                "in_bounds",
+                "bounds",
                 f"walls[{i}] = {w} is outside the {SIZE}×{SIZE} grid",
                 cell=list(w), field=f"walls[{i}]",
             ))
 
-    # ── wall-overlap checks ───────────────────────────────────────────────
+    # ── overlap checks: no cell may hold two different things ─────────────
+    # A repeated wall is deliberately *not* an overlap: the simulator tests
+    # membership in a set of cells, so ``[[3, 0], [3, 0]]`` denotes exactly the
+    # obstacle that ``[[3, 0]]`` does.  Rejecting it would refuse a reading that
+    # describes the same world, and the retry would have nothing to fix.  The
+    # overlaps this check is for are the ones that change the world: an obstacle
+    # standing on the cell the robot starts from, or on the goal.
     wall_set = {tuple(w) for w in walls}
     if tuple(robot) in wall_set:
         findings.append(_finding(
-            "valid", f"robot start {robot} is on a wall",
+            "overlaps", f"robot start {robot} is on a wall",
             cell=list(robot), field="robot",
         ))
     if tuple(goal) in wall_set:
         findings.append(_finding(
-            "valid", f"goal {goal} is on a wall",
+            "overlaps", f"goal {goal} is on a wall",
             cell=list(goal), field="goal",
         ))
 
-    # ── start ≠ goal ──────────────────────────────────────────────────────
+    # ── the goal must be a different cell from the robot's start ───────────
     if robot == goal:
         findings.append(_finding(
-            "valid", f"robot start and goal are the same cell {robot}",
-            cell=list(robot),
+            "goal", f"robot start and goal are the same cell {robot}",
+            cell=list(robot), field="goal",
         ))
 
     return findings, {"robot": robot, "goal": goal, "walls": walls, "dir": heading}
@@ -194,13 +228,12 @@ def _unsearchable_reason(parts: dict | None, findings: list[dict]) -> str | None
 
     A BFS verdict is only well-posed for a reading whose robot and goal are real,
     distinct, in-grid cells that are not themselves obstacles.  Anything else is
-    reported as unproven rather than searched.
+    reported as unproven rather than searched, and the reason names the problem
+    that blocked it.
     """
     if parts is None:
         return findings[0]["message"] if findings else "the reading is not a world"
-    blocker = next(
-        (f for f in findings if f["check"] in ("valid", "in_bounds")), None
-    )
+    blocker = next((f for f in findings if f["check"] != "reachable"), None)
     return blocker["message"] if blocker else None
 
 
@@ -244,15 +277,23 @@ def _unreachable_finding(parts: dict) -> dict | None:
 def _pass_detail(check_id: str, parts: dict) -> str:
     """What a passing check actually established, in the reading's own numbers."""
     walls = len(parts["walls"])
-    if check_id == "valid":
-        return (
-            f"well-formed world — robot, heading, goal and "
-            f"{_plural(walls, 'wall')} parsed"
-        )
-    if check_id == "in_bounds":
+    if check_id == "bounds":
         return (
             f"robot, goal and all {_plural(walls, 'wall')} fit the "
             f"{SIZE}×{SIZE} grid"
+        )
+    if check_id == "robot":
+        return (
+            f"robot at {parts['robot']} facing {parts['dir']} — a real start cell"
+        )
+    if check_id == "goal":
+        return (
+            f"goal at {parts['goal']} — a real cell, not the robot's start"
+        )
+    if check_id == "overlaps":
+        return (
+            "the robot and the goal are on free cells — no obstacle stands "
+            "under either"
         )
     return (
         f"BFS found a path from {parts['robot']} to {parts['goal']} "
@@ -271,7 +312,7 @@ def check_world_report(world: Any) -> dict:
     dict
         ``{"ok": bool, "reason": str, "checks": [{"id", "label", "ok",
         "detail", "data"}]}``.  ``reason`` is the first problem found (or
-        ``"ok"``); ``ok`` is true only when all three checks passed; a check that
+        ``"ok"``); ``ok`` is true only when all five checks passed; a check that
         could not be evaluated is ``ok=None``; ``data`` carries the fact behind a
         failure and is ``{}`` on a pass or an unproven check.
 
@@ -286,6 +327,14 @@ def check_world_report(world: Any) -> dict:
         unreachable = _unreachable_finding(parts)
         if unreachable:
             findings.append(unreachable)
+
+    # A check that owns a cell shape failure cannot measure an extent: bounds is
+    # unproven, not failed, so the reading is never accused of leaving a grid it
+    # never named a coordinate in.
+    bounds_unproven = any(
+        finding["check"] in _CELL_OWNERS and "two ints" in finding["message"]
+        for finding in findings
+    )
 
     by_check: dict[str, list[dict]] = {check_id: [] for check_id, _ in WORLD_CHECKS}
     for finding in findings:
@@ -302,6 +351,8 @@ def check_world_report(world: Any) -> dict:
         unproven: str | None = None
         if parts is None:
             unproven = "not evaluated — the reading is not a world yet"
+        if check_id == "bounds" and bounds_unproven:
+            unproven = "not evaluated — a cell is not a coordinate pair"
         if check_id == "reachable" and blocker is not None:
             unproven = f"not evaluated — {blocker}"
 
