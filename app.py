@@ -101,6 +101,14 @@ SHORTCUTS: dict[str, str] = {
 # last ten and nothing reads the older ones.
 LOG_LINE_CAP = 200
 BENCHMARK_JSON = ROOT / "benchmarks" / "results.json"
+# The aggregate results the runner writes: what was measured, on which dataset,
+# with how many runs and for what sample.  Shown verbatim, because it is the
+# artifact a reader would audit.
+BENCHMARK_REPORT_MD = ROOT / "benchmarks" / "report.md"
+# The aggregate results the runner writes: what was measured, on which dataset,
+# with how many runs and what sample-size verdict.  Shown verbatim, because it is
+# the artifact a reader would audit.
+BENCHMARK_REPORT_MD = ROOT / "benchmarks" / "report.md"
 
 # ── Optional backend modules: the app must start without them ─────────────
 try:
@@ -1992,7 +2000,7 @@ if HAVE_BENCHMARK:
         _sections = _benchmark_sources()
         st.markdown(
             benchmark_panel.panel(
-                benchmark_panel.intro_html(_sections)
+                benchmark_panel.headline_html(_sections)
                 + f"<div style='height:{S.px(S.MD)}'></div>"
                 + benchmark_panel.caveats_html(_sections)
                 + f"<div style='height:{S.px(S.LG)}'></div>"
@@ -2010,3 +2018,13 @@ if HAVE_BENCHMARK:
                     "row there carries the mode it was run in."
                 )
                 st.markdown(BENCHMARK_PATH.read_text(encoding="utf-8"))
+        if BENCHMARK_REPORT_MD.exists():
+            with st.expander("Aggregate results - benchmarks/report.md"):
+                st.caption(
+                    "One row per comparable cell — same dataset, model, backend, "
+                    "mode and repair setting — with its run count, success and "
+                    "failure counts, latency statistics and whether the sample "
+                    "is large enough to compare at all. Written by "
+                    "python -m gemmabot.benchmark."
+                )
+                st.markdown(BENCHMARK_REPORT_MD.read_text(encoding="utf-8"))

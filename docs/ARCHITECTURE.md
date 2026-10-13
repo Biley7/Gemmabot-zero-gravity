@@ -78,9 +78,45 @@ app.py  (Streamlit entry point, session state, five labs)
   │                 → simulator.step + verify_plan alone — NO model is called
   │    Each record is labelled LIVE RUN / RECORDED RUN / SYNTHETIC BENCHMARK
   │
-  └─ Benchmark
-       benchmark sources measured separately (scripted replies = SYNTHETIC)
+  └─ Benchmark — RobotBench
+       gemmabot.benchmark (runner) → benchmarks/{results,report}.{json,md}
+       frontend.panels.benchmark reads both sources and never adds them up
+       (a scripted reply is SYNTHETIC, and never shown as model performance)
 ```
+
+### RobotBench — the benchmark
+
+**RobotBench** evaluates AI-generated robot plans against deterministic
+simulation scenarios.  `gemmabot/benchmark.py` runs the matrix (dataset ×
+backend × repair setting × runs) and writes two artifacts: `results.json`, one
+record per run, and `report.json`/`report.md`, one **result** per comparable
+cell — same dataset, model, backend, mode and repair setting — carrying the
+scenario identifiers, the model, the mode, a timestamp, the run count, the
+success and failure counts, the latency statistics (mean, median, p95, min,
+max), the ids of the runs it summarizes and a sample-size verdict.
+
+`frontend/panels/benchmark.py` renders nine metrics — success rate, verification
+rejection rate, repair rate, repair success rate, average actions, average
+attempts, latency, collision rate and boundary violation rate — each with its
+own denominator, its definition, a tooltip and the sample size behind it.  Two
+rules hold everywhere in that view:
+
+* **No number is fabricated.** A missing measurement is `None` (rendered *no
+data*), never a zero; a run that was never judged is excluded, not counted as a
+failure.
+* **Live and synthetic are never merged.** The headline numbers are computed
+over one mode and say which; the run log and the stored artifact overlap, so
+they are measured separately and never summed.
+
+The two execution metrics are the only place the lab touches the simulator: it
+replays every plan a run recorded — the accepted one *and* each attempt the
+repair loop refused — on the recorded world through `player.build_timeline`,
+and asks what stopped it (`player.halt_kind`: a wall is a collision, the grid
+edge a boundary violation).  A verified plan cannot collide, so measuring the
+accepted plan alone would always read 0%; the refused attempts are the
+measurement.  No model is called.  Below `config.BENCH_MIN_SAMPLE` runs a
+metric says so on its own card: those numbers describe those runs, not the
+model.
 
 ### The run record
 
@@ -123,7 +159,7 @@ owning any validation logic.
 | `backend/vision/map_vision.py` | `read_map`, `check_world_report`, `ask_vision_api`, `ask_vision_ollama` |
 | `backend/logger/logger.py` | `log_run` (the twelve-field run record + `actions`/`world`/`mode`), `load_runs`, `summarize_run`, secret redaction |
 | `gemmabot/simulator.py` | 8×8 world, `step`, `render`, `reached_goal` (physics source of truth) |
-| `gemmabot/{config,prompts,benchmark}.py` | configuration, prompts, benchmark CLI |
+| `gemmabot/{config,prompts,benchmark}.py` | configuration, prompts, the RobotBench runner (metrics, result records, report) |
 | `gemmabot/{planner,harness,logger,map_vision}.py`, root `engine.py`, `ui_helpers.py` | 3–9 line compatibility shims that re-export the real modules |
 
 ## Ownership

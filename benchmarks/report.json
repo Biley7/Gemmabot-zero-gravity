@@ -1,0 +1,112 @@
+[
+  {
+    "product": "RobotBench",
+    "dataset": "gemmabot-grid-v1",
+    "scenarios": [
+      "default_map",
+      "long_detour_wall",
+      "one_turn_south",
+      "several_turns_west",
+      "tricky_pocket"
+    ],
+    "model": null,
+    "backend": "dry",
+    "mode": "synthetic",
+    "max_tries": 1,
+    "timestamp": "2026-10-13T02:55:37.059911+00:00",
+    "runs": 15,
+    "successes": 15,
+    "failures": 0,
+    "rejected": 0,
+    "repaired": 0,
+    "repaired_ok": 0,
+    "latency": {
+      "n": 15,
+      "excluded": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "run_ids": [
+      "210dffc77003",
+      "69c4c34914b7",
+      "9cf12bfe2722",
+      "5a90c483cf78",
+      "1f51994c0330",
+      "8e62d0bbb0d5",
+      "be381b4f9638",
+      "68420390d43a",
+      "d754a8f5dca0",
+      "a0e6c4f6700e",
+      "f863a58b444d",
+      "9b6e09164027",
+      "cc84a74f8f0f",
+      "735fde36706f",
+      "b7376ba9cef7"
+    ],
+    "sample": {
+      "runs": 15,
+      "min": 30,
+      "comparable": false,
+      "note": "n = 15 — below the 30-run floor: these numbers describe these runs, not the model, and must not be used to rank one model above another."
+    },
+    "reproduce": "python -m gemmabot.benchmark --dry --runs 3"
+  },
+  {
+    "product": "RobotBench",
+    "dataset": "gemmabot-grid-v1",
+    "scenarios": [
+      "default_map",
+      "long_detour_wall",
+      "one_turn_south",
+      "several_turns_west",
+      "tricky_pocket"
+    ],
+    "model": null,
+    "backend": "dry",
+    "mode": "synthetic",
+    "max_tries": 3,
+    "timestamp": "2026-10-13T02:55:37.060742+00:00",
+    "runs": 15,
+    "successes": 15,
+    "failures": 0,
+    "rejected": 0,
+    "repaired": 10,
+    "repaired_ok": 10,
+    "latency": {
+      "n": 15,
+      "excluded": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p95": 0.0,
+      "min": 0.0,
+      "max": 0.0
+    },
+    "run_ids": [
+      "5196c1a15e2c",
+      "4363539ad907",
+      "58dee5f91fac",
+      "9d485e7ee97c",
+      "0ecee2b08b34",
+      "c615e74ec4e4",
+      "6c5130ef05e8",
+      "677ea1b77693",
+      "5231b17503b9",
+      "37ea6010d1c9",
+      "3e070eb4dd40",
+      "83f35e479a91",
+      "81cf00ac79ed",
+      "f3888647cb52",
+      "8bb74a6bc8cf"
+    ],
+    "sample": {
+      "runs": 15,
+      "min": 30,
+      "comparable": false,
+      "note": "n = 15 — below the 30-run floor: these numbers describe these runs, not the model, and must not be used to rank one model above another."
+    },
+    "reproduce": "python -m gemmabot.benchmark --dry --runs 3"
+  }
+]

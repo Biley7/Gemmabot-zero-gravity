@@ -200,6 +200,76 @@ scripted planner answered; never a live measurement, whatever its numbers say).
 No run is ever fabricated: the table, the metadata and every replay read this
 file and nothing else.
 
+## RobotBench results — `benchmarks/results.json`, `benchmarks/report.json`
+
+The runner writes two artifacts. `results.json` is one record per **run**:
+
+```json
+{
+  "dataset": "gemmabot-grid-v1",
+  "scenario": "default_map",
+  "case": "default_map",
+  "model": null,
+  "backend": "dry",
+  "requested_backend": "dry",
+  "mode": "synthetic",
+  "timestamp": "2026-10-13T02:55:37.059911+00:00",
+  "run_id": "210dffc77003",
+  "max_tries": 1,
+  "run": 1,
+  "success": true,
+  "verified": true,
+  "attempts": 1,
+  "latency": 0.0,
+  "error": ""
+}
+```
+
+`run_id` is the id of the record this run appended to `logs/runs.jsonl`, which
+holds the world and the plan: an artifact row is therefore traceable and
+replayable. `verified` is the verifier's verdict on the accepted plan, and is
+`null` when there was no plan to verify. Each benchmark run also logs its own
+run record with `input_type: "benchmark"` and `execution: {"ran": false, ...}` —
+a benchmark plans and verifies; it never drives the robot.
+
+`report.json` is one **result** per comparable cell — same dataset, model,
+backend, mode and repair setting — and is the shape every benchmark result has:
+
+```json
+{
+  "product": "RobotBench",
+  "dataset": "gemmabot-grid-v1",
+  "scenarios": ["default_map", "tricky_pocket"],
+  "model": null,
+  "backend": "dry",
+  "mode": "synthetic",
+  "max_tries": 3,
+  "timestamp": "2026-10-13T02:55:37.059911+00:00",
+  "runs": 15,
+  "successes": 15,
+  "failures": 0,
+  "rejected": 0,
+  "repaired": 10,
+  "repaired_ok": 10,
+  "latency": {"n": 15, "excluded": 0, "mean": 0.0, "median": 0.0,
+              "p95": 0.0, "min": 0.0, "max": 0.0},
+  "run_ids": ["210dffc77003", "…"],
+  "sample": {"runs": 15, "min": 30, "comparable": false, "note": "n = 15 — below …"},
+  "reproduce": "python -m gemmabot.benchmark --dry --runs 3"
+}
+```
+
+- `latency` holds latency statistics only for the runs that measured one;
+  `excluded` counts the runs that did not, and a missing measurement is never a
+  zero. `p95` is the nearest-rank percentile, so it can never exceed `max`.
+- `sample.comparable` is false below `config.BENCH_MIN_SAMPLE` (default 30). A
+  result below that floor reports what it measured and does not support a claim
+  that one model is better than another; the runner's report and the lab both
+  say so in words.
+- `reproduce` is the command that measures the same thing again. A `synthetic`
+  result is reproduced with `--dry`: naming a backend there would ask for a
+  model that never answered the runs.
+
 ## Compatibility shims
 
 `gemmabot/{planner,harness,logger,map_vision}.py`, root `engine.py` and

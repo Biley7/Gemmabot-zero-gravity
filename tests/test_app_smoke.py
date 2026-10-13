@@ -760,7 +760,14 @@ def test_benchmark_lab_separates_live_from_synthetic(monkeypatch):
     assert not at.exception, [element.value for element in at.exception]
 
     rendered = "\n".join(element.value for element in at.markdown)
-    assert "Benchmark Lab" in rendered
+    # Phase 7: the lab carries the product's name, and its headline block states
+    # what was measured and on how few runs before any number is read.
+    assert "RobotBench" in rendered
+    assert "ROBOTBENCH" in rendered
+    assert "5 run(s) recorded" in rendered
+    assert "over 2 run(s) answered by a model" in rendered
+    assert "below the 30-run floor" in rendered
+    assert "no comparison" in rendered
 
     # The two sides are separate columns, and the unclassifiable runs sit apart
     # rather than being counted with either.
@@ -775,11 +782,18 @@ def test_benchmark_lab_separates_live_from_synthetic(monkeypatch):
     assert "data-fact='synthetic' data-value='2'" in rendered
     assert "data-fact='unclassified' data-value='1'" in rendered
 
-    # Metrics are drawn per mode and carry their own denominators.
+    # Metrics are drawn per mode and carry their own denominators, including
+    # the four RobotBench outcome metrics.
     assert rendered.count("data-metric='success'") >= 2
     assert "data-value='50%'" in rendered          # 1 of 2 live runs passed
     assert "data-value='100%'" in rendered         # both scripted runs did
     assert "data-n='2'" in rendered
+    for metric in ("rejected", "repair_success", "collision", "boundary"):
+        assert f"data-metric='{metric}'" in rendered
+    # Every card explains itself, and the execution metrics say they had nothing
+    # to reproduce rather than reporting a zero.
+    assert "title='A run counts as a success when its plan passed" in rendered
+    assert "no run recorded a world and a plan to reproduce" in rendered
 
     # Both chart treatments are present, and the axes are labelled.
     assert "gb-bench-min-row" in rendered

@@ -1,4 +1,4 @@
-# GemmaBot Benchmark Results
+# RobotBench Results
 
 Each row carries the mode it was run in: `live` rows were answered by a model, `synthetic` rows by the scripted reader.
 
@@ -24,3 +24,4 @@ Each row carries the mode it was run in: `live` rows were answered by a model, `
 | dry | synthetic | several_turns_west | 3 | 100% | 2.00 | 0.000 |
 | dry | synthetic | tricky_pocket | 1 | 100% | 1.00 | 0.000 |
 | dry | synthetic | tricky_pocket | 3 | 100% | 2.00 | 0.000 |
+**Insufficient sample.** n = 15 — below the 30-run floor: these numbers describe these runs, not the model, and must not be used to rank one model above another.

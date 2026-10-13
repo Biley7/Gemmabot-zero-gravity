@@ -345,3 +345,39 @@ Run History over a documented record:
 **Still open:** blockers 1, 2, 3, 5 and the unauthenticated deployment surface are
 unchanged, and D4 (replay of *model replies*, distinct from this plan replay) is
 still not implemented.
+
+## 20. Phase 7 — RobotBench (2026-10-13)
+
+The benchmark is now a named product with a schema, and the two audit findings
+about it are closed: the stored artifact no longer mixes provenance silently, and
+no result can be read as a model comparison on too few runs.
+
+* **Nine metrics**, each with its own denominator, definition and tooltip:
+  success rate, verification rejection rate, repair rate, repair success rate,
+  average actions, average attempts, latency, collision rate and boundary
+  violation rate. A missing measurement renders *no data*, never a zero; a run
+  that was never judged is excluded rather than counted as a failure.
+* **Every result names what it measured**: dataset (`gemmabot-grid-v1`), scenario,
+  model, backend, mode, timestamp, run count, success and failure counts,
+  latency statistics (mean/median/p95/min/max), the ids of the runs it
+  summarizes, and a sample-size verdict. Written to `benchmarks/report.json`
+  (and `report.md`), documented in `docs/CONTRACTS.md`.
+* **Runs are reproducible.** Every per-run artifact record carries the
+  `run_id` of the log record it came from, which holds the world and the plan;
+  each result carries the command that would measure it again.
+* **A small sample is labelled.** Below `config.BENCH_MIN_SAMPLE` (30) both the
+  runner's report and the lab say the numbers describe those runs and must not
+  be used to rank models. The headline block states which mode its four numbers
+  come from, and says "this is not model performance" when they are scripted.
+* **The execution metrics are measured, not assumed.** Collision and boundary
+  rates replay every plan a run recorded — the accepted plan *and* each refused
+  attempt — through the simulator (`player.build_timeline` / `player.halt_kind`)
+  and count what stopped them. On the repo's own log this reads 33% collisions
+  and 1% boundary violations over 82 reproducible runs; measuring the accepted
+  plans alone would have read 0%, because the verifier passed them.
+* **Roadmap C5 partly closed:** the artifact now records provenance per run and
+  per result, so a live row can only come from a live run.
+
+**Still open:** blockers 1, 2, 3, 5 and the unauthenticated deployment surface
+are unchanged; the live matrix still needs a reachable backend and a human to
+run it, and there is still no CI to enforce the provenance rule automatically.

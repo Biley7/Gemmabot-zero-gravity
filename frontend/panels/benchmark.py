@@ -1,7 +1,17 @@
-"""Benchmark Lab — live and synthetic runs, measured and kept apart.
+"""RobotBench — the benchmark lab: live and synthetic runs, measured and kept apart.
 
 Owner: FRONTEND.  No Streamlit import, no network, no model, no timing done
-here: every number is read out of runs that already happened.
+here: every number is read out of runs that already happened, and the two
+execution metrics are reproduced by replaying the recorded plan on the recorded
+world with the simulator alone.
+
+The nine metrics
+----------------
+success rate, verification rejection rate, repair rate, repair success rate,
+average actions, average attempts, latency, collision rate and boundary
+violation rate.  Each one names its own denominator and defines itself in words
+(see :data:`DEFINITIONS` and :data:`TOOLTIPS`), because a rate without its
+denominator is a claim nobody can check.
 
 What "no misleading metrics" means in this module
 -------------------------------------------------
@@ -22,32 +32,54 @@ What "no misleading metrics" means in this module
 5. **Sources are never summed.** The run log and a stored benchmark artifact
    overlap — the runner logs its runs — so each is measured on its own and the
    overlap is stated.
+6. **A small sample is labelled, not quietly printed.** Below the configured
+   floor (``config.BENCH_MIN_SAMPLE``) a number describes the runs that were
+   made and nothing else, so every metric says so and the header says it loudest.
 
 Public surface
 --------------
+PRODUCT / MIN_SAMPLE
 MODE_LIVE / MODE_SYNTHETIC / UNCLASSIFIED
 MODE_LABELS / MODE_STATES / MODE_NOTES
 DEFINITIONS                    what each metric means, in one line
+TOOLTIPS                       the same, long enough to act on
 provenance(record)             (mode, basis) for one run — never a guess
 rows(records, source)          normalised run rows from either source
 split(rows)                    mode → rows, plus the unclassified bucket
-metrics(rows)                  the five metrics, each with value and n
+metrics(rows)                  the nine metrics, each with value, n and tooltip
 series(rows)                   per backend (and repair setting) aggregates
 cells(rows)                    per case × max_tries aggregates
 facts_rows(section)            the section's headline counts
+sample_html(rows)              whether this sample may be compared at all
+headline_html(sections)        ROBOTBENCH: scenarios, modes, the four numbers
 chart_minimal(rows)            low-ink glance chart for ONE mode's rows
 chart_technical(rows)          labelled small multiples, one scale per metric
 facts_html / metrics_html / groups_html / section_html / cells_html
-intro_html / caveats_html / panel
+headline_html / caveats_html / panel
 """
 from __future__ import annotations
+
+from gemmabot.config import BENCH_MIN_SAMPLE
 
 from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
 from frontend.panels.engine import backend_label
+from frontend.panels import replay as replay_panel
+from frontend.simulation import player as playback
 from frontend.components.blocks import empty_state, escape as _e, fact_cards, shell, scroll_x, sub_title
+
+# The product this lab measures with, and the floor under which a number may not
+# be read as a comparison.  The floor is configuration so the runner's report and
+# this view cannot disagree about when a sample is too small.
+PRODUCT = "RobotBench"
+MIN_SAMPLE = BENCH_MIN_SAMPLE
+
+# What the simulator stopped on, counted separately: a wall in the way is a
+# collision, the edge of the grid is a boundary violation.
+COLLISION = playback.HALT_COLLISION
+BOUNDARY = playback.HALT_BOUNDARY
 
 MODE_LIVE = "live"
 MODE_SYNTHETIC = "synthetic"
@@ -91,12 +123,77 @@ _SCRIPTED_MARKERS: tuple[str, ...] = ("dry", "scripted", "fake")
 # What each metric is, printed next to it so a reader can check the arithmetic.
 DEFINITIONS: dict[str, str] = {
     "success": "share of runs whose plan passed the verifier",
+    "rejected": "share of runs the verifier refused every attempt of — the run "
+                "ended with no verified plan",
     "repair": "share of runs that needed more than one attempt — the first plan "
               "was refused and the loop repaired it",
+    "repair_success": "share of the runs that needed repair which still finished "
+                      "with a verified plan",
+    "collision": "share of runs whose recorded plans the simulator stopped at "
+                 "an obstacle — including the attempts the repair loop refused",
+    "boundary": "share of runs whose recorded plans the simulator stopped at the "
+                "edge of the grid",
     "latency": "mean wall-clock seconds per run, over the runs that measured it; "
                "not a throughput measurement",
     "actions": "mean actions in the accepted plan, over the runs that recorded one",
     "attempts": "mean planning attempts per run, over the runs that recorded them",
+}
+
+# The same definitions, long enough to decide something with.  Rendered as the
+# tooltip of the metric card: a number a reader cannot look up is a number they
+# have to take on trust.
+TOOLTIPS: dict[str, str] = {
+    "success": (
+        "A run counts as a success when its plan passed the verifier — not when a "
+        "robot reached a goal in the real world. Denominator: runs that recorded "
+        "an outcome. A run whose outcome was never recorded is excluded, not "
+        "counted as a failure."
+    ),
+    "rejected": (
+        "How often the verifier refused the plan: the run ended with no verified "
+        "plan, because every attempt it had was refused. Denominator: runs whose "
+        "attempts were recorded. A run that failed without any recorded attempt "
+        "verdict (for example a backend error) is excluded — nothing was refused."
+    ),
+    "repair": (
+        "How often the first plan was not good enough: the run needed more than "
+        "one attempt. Denominator: runs that recorded an attempt count. Repair "
+        "is not failure — see repair success rate for what happened after it."
+    ),
+    "repair_success": (
+        "Of the runs that needed repair, how many still ended with a verified "
+        "plan. Denominator: the runs with more than one attempt. This is the "
+        "number that says whether the repair loop is worth having."
+    ),
+    "collision": (
+        "How often a model proposed a plan that would drive into an obstacle. "
+        "Every plan the run recorded is replayed by the simulator alone: the "
+        "accepted plan and each attempt the repair loop refused. The accepted "
+        "plan alone would always read 0% — the verifier passed it — so the "
+        "refused attempts are what this measures. Denominator: runs that "
+        "recorded a world and at least one plan."
+    ),
+    "boundary": (
+        "How often a model proposed a plan that would leave the grid. Same "
+        "denominator and the same replay as the collision rate; counted apart "
+        "because an off-by-one at the edge is a different bug from hitting an "
+        "obstacle."
+    ),
+    "latency": (
+        "Mean wall-clock seconds per run, measured on the machine that made the "
+        "run — so it is not comparable across machines, and a scripted run's "
+        "near-zero latency is not a model speed. Denominator: the runs that "
+        "measured one."
+    ),
+    "actions": (
+        "Mean number of actions in the accepted plan. Shorter plans are not "
+        "automatically better: this measures plan shape, not plan quality. "
+        "Denominator: the runs that recorded a plan."
+    ),
+    "attempts": (
+        "Mean planning attempts per run, including the repairs. Denominator: the "
+        "runs that recorded an attempt count."
+    ),
 }
 
 
@@ -170,10 +267,107 @@ def provenance(record: object) -> dict:
 # Rows
 # ---------------------------------------------------------------------------
 
+def _verdict(record: dict) -> bool | None:
+    """The verifier's own verdict on the accepted plan, or ``None``."""
+    found = record.get("verification")
+    if not isinstance(found, dict):
+        return None
+    ok = found.get("ok")
+    return ok if isinstance(ok, bool) else None
+
+
+def _attempt_verdicts(record: dict) -> tuple[int, int]:
+    """``(refused, recorded)`` attempt verdicts from the run's own history.
+
+    Every planning attempt the verifier saw is recorded with its ``ok``.  Counts
+    only what is there: an attempt without a boolean verdict is neither.
+    """
+    history = record.get("history")
+    if not isinstance(history, list):
+        return 0, 0
+    verdicts = [
+        entry.get("ok") for entry in history
+        if isinstance(entry, dict) and isinstance(entry.get("ok"), bool)
+    ]
+    return sum(1 for value in verdicts if value is False), len(verdicts)
+
+
+def _rejected(ok: bool | None, refused: int, recorded: int) -> bool | None:
+    """Whether the verifier ended up refusing this run.
+
+    ``True`` when the run finished without an accepted plan *and* at least one
+    attempt was refused — every attempt it had was refused.  ``False`` when a
+    plan was accepted.  ``None`` when nothing was refused that we know of: a run
+    that failed for another reason (a backend error, say) is not a rejection,
+    and counting it as one would blame the verifier for it.
+    """
+    if ok is True:
+        return False
+    if ok is False and recorded and refused:
+        return True
+    return None
+
+
+def _plans(record: dict) -> list[list[dict]]:
+    """The distinct plans the record holds: each attempt's, then the accepted one.
+
+    The accepted plan alone would measure nothing — the verifier passed it, so
+    it cannot collide.  What these metrics are for is what the model *proposed*,
+    which is the accepted plan plus every attempt the repair loop refused.  The
+    accepted plan is usually also the last attempt's plan, so it is only added
+    when no attempt recorded it; replaying the same plan twice would weight it
+    twice.
+    """
+    plans: list[list[dict]] = []
+    history = record.get("history")
+    if isinstance(history, list):
+        for entry in history:
+            actions = entry.get("actions") if isinstance(entry, dict) else None
+            if isinstance(actions, list) and actions and actions not in plans:
+                plans.append(actions)
+    accepted = record.get("actions")
+    if isinstance(accepted, list) and accepted and accepted not in plans:
+        plans.append(accepted)
+    return plans
+
+
+def _reproduced(record: dict) -> tuple[dict[str, int], int, bool]:
+    """What the simulator stops on, over every plan the run recorded.
+
+    Replays each plan on the recorded world with the simulator alone — no model,
+    no network — and counts the stops by kind: a wall is a collision, the edge of
+    the grid a boundary violation.  Returns the counts, how many plans were
+    reproduced, and whether there was anything to reproduce at all.  A run with
+    no world or no plan is not reproducible, and its plans are not counted.
+    """
+    stops = {COLLISION: 0, BOUNDARY: 0}
+    world = record.get("world")
+    plans = _plans(record)
+    if not plans or not isinstance(world, dict):
+        return stops, 0, False
+
+    reproduced = 0
+    for actions in plans:
+        try:
+            timeline = replay_panel.timeline(
+                {"world": world, "actions": actions}, {"actions": actions}
+            )
+        except Exception:  # noqa: BLE001 - a bad record must not break the lab
+            continue
+        if not isinstance(timeline, dict):
+            continue
+        reproduced += 1
+        stopped = playback.halt_kind(timeline)
+        if stopped in stops:
+            stops[stopped] += 1
+    return stops, reproduced, reproduced > 0
+
+
 def rows(records: list[dict] | None, source: str = "run log") -> list[dict]:
     """Normalise records from either source into one row shape.
 
-    Reads only fields the records already have.  A field the source does not
+    Reads only fields the records already have, plus what the simulator can
+    reproduce from them (see :func:`_blocked`).  A field the source does not
     carry stays ``None`` and every metric that needs it will report that it has
     no measurement rather than invent one.
     """
@@ -185,18 +379,38 @@ def rows(records: list[dict] | None, source: str = "run log") -> list[dict]:
         actions = record.get("actions")
         backend = found["backend"]
         max_tries = _int_or_none(record.get("max_tries"))
+        ok = (record.get("success") if isinstance(record.get("success"), bool)
+              else None)
+        refused, recorded = _attempt_verdicts(record)
+        stopped, plans_reproduced, reproducible = _reproduced(record)
+        scenario = record.get("scenario") or record.get("case")
         out.append({
             "backend": backend,
             "backend_label": backend_label(backend),
             "mode": found["mode"],
             "basis": found["basis"],
-            "ok": record.get("success") if isinstance(record.get("success"), bool) else None,
+            "ok": ok,
             "attempts": _int_or_none(record.get("attempts")),
             "latency": _num(record.get("latency")),
             "actions": len(actions) if isinstance(actions, list) else None,
             "case": str(record["case"]) if record.get("case") else None,
             "max_tries": max_tries,
             "source": source,
+            # Everything the four outcome metrics rest on.  Each is ``None``
+            # when the record did not say, which is why none of them is ever
+            # read as a zero.
+            "verdict": _verdict(record),
+            "refused": refused,
+            "verdicts": recorded,
+            "rejected": _rejected(ok, refused, recorded),
+            "stopped": stopped,
+            "plans": plans_reproduced,
+            "reproducible": reproducible,
+            "dataset": str(record["dataset"]) if record.get("dataset") else None,
+            "scenario": str(scenario) if scenario else None,
+            "model": str(record["model"]) if record.get("model") else None,
+            "run_id": str(record["run_id"]) if record.get("run_id") else None,
+            "timestamp": str(record["timestamp"]) if record.get("timestamp") else None,
         })
     return out
 
@@ -260,13 +474,37 @@ def cells(run_rows: list[dict] | None) -> list[dict]:
 # Metrics
 # ---------------------------------------------------------------------------
 
+def sample_verdict(runs: int) -> dict:
+    """Whether a sample of *runs* may be read as evidence about a model.
+
+    Mirrors the runner's floor (``config.BENCH_MIN_SAMPLE``) so the view and the
+    report cannot disagree about when a number is too small to compare.
+    """
+    return {
+        "runs": runs,
+        "min": MIN_SAMPLE,
+        "comparable": runs >= MIN_SAMPLE,
+        "note": (
+            f"n = {runs} — at or above the {MIN_SAMPLE}-run floor for this dataset."
+            if runs >= MIN_SAMPLE else
+            f"n = {runs} — below the {MIN_SAMPLE}-run floor: these numbers describe "
+            f"these runs, not the model, and must not be used to rank one model "
+            f"above another."
+        ),
+    }
+
+
 def metrics(run_rows: list[dict] | None) -> list[dict]:
-    """The five benchmark metrics, each with its own denominator.
+    """The nine RobotBench metrics, each with its own denominator.
 
     Returns one dict per metric: ``id``, ``label``, ``value`` (``None`` when
     nothing could be measured), ``display``, ``unit``, ``n`` (how many runs the
     value rests on), ``excluded`` (runs the metric had to skip), ``state``,
-    ``definition`` and ``detail``.
+    ``definition``, ``tooltip`` and ``detail``.
+
+    The order is the order of the question: did the plan pass, how often was it
+    refused, how often did the loop repair it, did the repair work, what stopped
+    the broken ones, and how long did all of it take.
     """
     run_rows = list(run_rows or [])
 
@@ -285,6 +523,35 @@ def metrics(run_rows: list[dict] | None) -> list[dict]:
     latency = _mean(measured_latency) if measured_latency else None
     actions = _mean([float(value) for value in known_actions]) if known_actions else None
     attempts = _mean([float(value) for value in known_attempts]) if known_attempts else None
+
+    # ── Rejection: the verifier refused every attempt the run had ────────────
+    judged = [row for row in run_rows if row["rejected"] is not None]
+    rejected_runs = sum(1 for row in judged if row["rejected"])
+    rejection = _mean([1.0 if row["rejected"] else 0.0 for row in judged])
+    verdicts = sum(int(row["verdicts"] or 0) for row in run_rows)
+    refused = sum(int(row["refused"] or 0) for row in run_rows)
+
+    # ── Repair success: of the runs that needed repair, how many finished ────
+    recoverable = [row for row in run_rows
+                   if row["attempts"] is not None and row["attempts"] > 1]
+    repaired_ok = sum(1 for row in recoverable if row["ok"] is True)
+    repair_success = _mean(
+        [1.0 if row["ok"] is True else 0.0 for row in recoverable]
+    )
+
+    # ── What stopped the plans the simulator could reproduce ────────────────
+    replayed = [row for row in run_rows if row["reproducible"]]
+    plans_total = sum(int(row["plans"] or 0) for row in replayed)
+    collisions = sum(1 for row in replayed if row["stopped"].get(COLLISION))
+    boundaries = sum(1 for row in replayed if row["stopped"].get(BOUNDARY))
+    collided_plans = sum(int(row["stopped"].get(COLLISION) or 0) for row in replayed)
+    off_grid_plans = sum(int(row["stopped"].get(BOUNDARY) or 0) for row in replayed)
+    collision = _mean(
+        [1.0 if row["stopped"].get(COLLISION) else 0.0 for row in replayed]
+    )
+    boundary = _mean(
+        [1.0 if row["stopped"].get(BOUNDARY) else 0.0 for row in replayed]
+    )
 
     def _latency_display(mean: float | None) -> tuple[str, str]:
         """Seconds, unless that would round a real measurement down to zero."""
@@ -309,47 +576,94 @@ def metrics(run_rows: list[dict] | None) -> list[dict]:
             "detail": detail,
             "state": state if value is not None else "neutral",
             "definition": DEFINITIONS[key],
+            "tooltip": TOOLTIPS[key],
+            "caution": bool(value is not None) and n < MIN_SAMPLE,
+            "sample": sample_verdict(n),
         }
 
     no_data = "no data"
+    total = len(run_rows)
 
     return [
         item(
             "success", "Success rate", success,
             _pct(success) if success is not None else no_data, "%",
-            len(known_ok), len(run_rows) - len(known_ok),
+            len(known_ok), total - len(known_ok),
             f"{sum(1 for ok in known_ok if ok)} of {len(known_ok)} runs passed the "
             f"verifier" if known_ok else "no run recorded an outcome",
             "success" if success == 1.0 else ("warning" if success is not None else "neutral"),
         ),
         item(
+            "rejected", "Rejection rate", rejection,
+            _pct(rejection) if rejection is not None else no_data, "%",
+            len(judged), total - len(judged),
+            f"{rejected_runs} of {len(judged)} runs ended with no verified plan · "
+            f"{refused} of {verdicts} attempts refused by the verifier"
+            if judged else "no run recorded an attempt verdict",
+            "warning" if rejected_runs else "neutral",
+        ),
+        item(
             "repair", "Repair rate", repair,
             _pct(repair) if repair is not None else no_data, "%",
-            len(known_attempts), len(run_rows) - len(known_attempts),
+            len(known_attempts), total - len(known_attempts),
             f"{len(repaired)} of {len(known_attempts)} runs needed more than one "
             f"attempt · {recovered} of those still finished"
             if known_attempts else "no run recorded an attempt count",
             "warning" if repaired else "neutral",
         ),
         item(
+            "repair_success", "Repair success rate", repair_success,
+            _pct(repair_success) if repair_success is not None else no_data, "%",
+            len(recoverable),
+            # Runs with no attempt count are the unmeasured ones here: a run that
+            # recorded one attempt simply needed no repair, which the detail
+            # says, and is outside the population rather than uncounted.
+            total - len(known_attempts),
+            f"{repaired_ok} of {len(recoverable)} repaired runs still passed the "
+            f"verifier" if recoverable else "no run needed repair",
+            "success" if repair_success == 1.0 else (
+                "warning" if repair_success is not None else "neutral"
+            ),
+        ),
+        item(
+            "collision", "Collision rate", collision,
+            _pct(collision) if collision is not None else no_data, "%",
+            len(replayed), total - len(replayed),
+            f"{collisions} of {len(replayed)} runs proposed a plan the simulator "
+            f"stopped at an obstacle · {collided_plans} of {plans_total} reproduced "
+            f"plans hit one" if replayed else "no run recorded a world and a plan "
+            f"to reproduce",
+            "warning" if collisions else "neutral",
+        ),
+        item(
+            "boundary", "Boundary violation rate", boundary,
+            _pct(boundary) if boundary is not None else no_data, "%",
+            len(replayed), total - len(replayed),
+            f"{boundaries} of {len(replayed)} runs proposed a plan the simulator "
+            f"stopped at the edge of the grid · {off_grid_plans} of {plans_total} "
+            f"reproduced plans left it" if replayed else "no run recorded a world "
+            f"and a plan to reproduce",
+            "warning" if boundaries else "neutral",
+        ),
+        item(
             "latency", "Mean latency", latency,
             *_latency_display(latency),
-            len(measured_latency), len(run_rows) - len(measured_latency),
-            f"{len(measured_latency)} of {len(run_rows)} runs measured a latency"
+            len(measured_latency), total - len(measured_latency),
+            f"{len(measured_latency)} of {total} runs measured a latency"
             if measured_latency else "no run recorded a latency",
         ),
         item(
             "actions", "Mean actions", actions,
             "—" if actions is None else f"{actions:.1f}", "steps",
-            len(known_actions), len(run_rows) - len(known_actions),
-            f"{len(known_actions)} of {len(run_rows)} runs recorded a plan"
+            len(known_actions), total - len(known_actions),
+            f"{len(known_actions)} of {total} runs recorded a plan"
             if known_actions else "no run recorded a plan",
         ),
         item(
             "attempts", "Mean attempts", attempts,
             "—" if attempts is None else f"{attempts:.2f}", "tries",
-            len(known_attempts), len(run_rows) - len(known_attempts),
-            f"{len(known_attempts)} of {len(run_rows)} runs recorded an attempt count"
+            len(known_attempts), total - len(known_attempts),
+            f"{len(known_attempts)} of {total} runs recorded an attempt count"
             if known_attempts else "no run recorded an attempt count",
         ),
     ]
@@ -406,7 +720,12 @@ def split_unit(display: str, unit: str) -> tuple[str, str]:
 
 
 def metrics_html(run_rows: list[dict]) -> str:
-    """The five metrics as cards, each with its denominator and definition."""
+    """The metrics as cards, each with its denominator, definition and tooltip.
+
+    Every card carries the long explanation as a ``title`` so a reader can hover
+    it without the layout shouting, and a card resting on too few runs says so
+    in the card itself rather than only in a footnote.
+    """
     cards: list[str] = []
     for metric in metrics(run_rows):
         empty = metric["value"] is None
@@ -421,10 +740,19 @@ def metrics_html(run_rows: list[dict]) -> str:
             f" · {metric['excluded']} not measured"
             if metric["excluded"] else ""
         )
+        caution = (
+            f"<span class='gb-bench-caution' data-caution='true' "
+            f"style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
+            f"color:{C.WARNING}'>⚠ below the {metric['sample']['min']}-run floor "
+            f"— no comparison</span>"
+            if metric["caution"] else ""
+        )
         cards.append(
             f"<div class='gb-bench-metric' data-metric='{_e(metric['id'])}' "
             f"data-value='{'' if empty else _e(metric['display'])}' "
             f"data-n='{metric['n']}' "
+            f"data-definition='{_e(metric['definition'])}' "
+            f"title='{_e(metric['tooltip'])}' "
             f"style='display:flex;flex-direction:column;gap:{S.px(S.XS)};"
             f"padding:{S.px(S.SM)} {S.px(S.MD)};background:{C.BG_SURFACE};"
             f"border:1px solid {C.BORDER_SUBTLE};"
@@ -438,6 +766,7 @@ def metrics_html(run_rows: list[dict]) -> str:
             f"color:{C.TEXT_SECONDARY}'>n = {metric['n']}"
             f"{excluded_note}"
             f"</span>"
+            f"{caution}"
             f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
             f"color:{C.TEXT_MUTED}'>{_e(metric['detail'])}</span>"
             f"<span style='font-family:{T.FONT_SANS};font-size:{T.SIZE_XS}px;"
@@ -468,11 +797,12 @@ def _bar(fraction: float, color: str, *, width: int = 160, height: int = 6) -> s
 
 
 def chart_minimal(run_rows: list[dict] | None) -> str:
-    """The glance: success and repair per series, one shared 0–100% scale.
+    """The glance: passed, repaired and refused per series, one 0–100% scale.
 
-    Only those two, because they are the only pair that share a unit.  Adding
-    latencies or action counts to the same bars would make the lengths compare
-    things that are not comparable.
+    Only those three, because they are the ones that share a unit and tell the
+    loop's story: the plan passed, the loop had to repair it, or the verifier
+    refused it.  Adding latencies or action counts to the same bars would make
+    the lengths compare things that are not comparable.
 
     Call it with one mode's rows: bars from live and scripted runs on one chart
     would invite a comparison between a model and a script.
@@ -488,8 +818,11 @@ def chart_minimal(run_rows: list[dict] | None) -> str:
     for group in groups:
         color = MODE_COLORS.get(group["mode"] or UNCLASSIFIED, C.TEXT_MUTED)
         success = group["metrics"]["success"]
+        rejected = group["metrics"]["rejected"]
         repair = group["metrics"]["repair"]
-        for metric, mark in ((success, "success"), (repair, "repair")):
+        for metric, mark in (
+            (success, "success"), (repair, "repair"), (rejected, "rejected"),
+        ):
             value = metric["value"]
             bar = (
                 _bar(value, color)
@@ -505,10 +838,9 @@ def chart_minimal(run_rows: list[dict] | None) -> str:
                 f"<span style='width:{S.px(78)};font-family:{T.FONT_MONO};"
                 f"font-size:{T.SIZE_XS}px;color:{color};overflow:hidden;"
                 f"text-overflow:ellipsis;white-space:nowrap'>"
-                f"{'' if mark == 'repair' else _e(group['label'])}</span>"
-                f"<span style='width:{S.px(48)};font-family:{T.FONT_MONO};"
-                f"font-size:{T.SIZE_XS}px;color:{C.TEXT_MUTED}'>"
-                f"{'repair' if mark == 'repair' else 'success'}</span>"
+                f"{_e(group['label']) if mark == 'success' else ''}</span>"
+                f"<span style='width:{S.px(58)};font-family:{T.FONT_MONO};"
+                f"font-size:{T.SIZE_XS}px;color:{C.TEXT_MUTED}'>{mark}</span>"
                 f"{bar}"
                 f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_SM}px;"
                 f"color:{C.TELEMETRY_VALUE}'>"
@@ -520,7 +852,8 @@ def chart_minimal(run_rows: list[dict] | None) -> str:
     legend = (
         f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
         f"color:{C.TEXT_MUTED};margin-bottom:{S.px(S.SM)}'>"
-        f"both bars share one 0–100% scale</div>"
+        f"these bars share one 0–100% scale, and a run can be both repaired and "
+        f"successful</div>"
     )
     return shell(legend + "".join(lines))
 
@@ -725,9 +1058,12 @@ def groups_html(section: dict) -> str:
         color = MODE_COLORS[mode]
         chip = DS.status_chip(f"{MODE_LABELS[mode]} · {len(group)} run(s)", MODE_STATES[mode])
         if group:
-            # Metrics, then the glance chart — both scoped to this one mode.
+            # The sample size, then the metrics, then the glance chart — all
+            # scoped to this one mode.  The caution leads, because it decides
+            # how much any number under it may be read as.
             body = (
-                metrics_html(group)
+                sample_html(group)
+                + metrics_html(group)
                 + f"<div style='margin-top:{S.px(S.MD)}'>{chart_minimal(group)}</div>"
             )
         else:
@@ -864,17 +1200,92 @@ def caveats_html(sections: list[dict]) -> str:
     )
 
 
-def intro_html(sections: list[dict]) -> str:
-    """What this view is, and where the data actually stands right now.
+def sample_html(run_rows: list[dict] | None) -> str:
+    """Whether this bucket of runs may be compared at all, in one line.
 
-    The second half matters more than the first: if no live run has been
-    recorded, the view says so instead of letting an empty LIVE column read as a
-    clean bill of health, and names the command that would produce one.
+    The floor is the point: below it, the honest statement is that the numbers
+    describe the runs that were made.  Nothing else in the view is allowed to
+    imply more, and this line is what keeps the reader from reading a ranking
+    into forty runs.
     """
-    counts = {
-        mode: sum(len(split(section.get("rows"))[mode]) for section in sections)
+    rows = list(run_rows or [])
+    verdict = sample_verdict(len(rows))
+    color = C.TEXT_SECONDARY if verdict["comparable"] else C.WARNING
+    return (
+        f"<div class='gb-bench-sample' "
+        f"data-comparable='{'true' if verdict['comparable'] else 'false'}' "
+        f"style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
+        f"color:{color};margin-bottom:{S.px(S.SM)}'>{_e(verdict['note'])}</div>"
+    )
+
+
+def headline_html(sections: list[dict]) -> str:
+    """ROBOTBENCH: what was measured, on how many scenarios, and the numbers.
+
+    The four headline numbers are computed over ONE mode's runs and the block
+    says which: the live runs when there are any, otherwise the scripted
+    reader's — with the fact stated on the block, because a scripted result read
+    as a model result is exactly the mistake this lab exists to prevent.  Each
+    number carries its definition as a tooltip and its own sample size.
+    """
+    rows = [row for section in sections for row in (section.get("rows") or [])]
+    buckets = split(rows)
+    live = buckets[MODE_LIVE]
+    scripted = buckets[MODE_SYNTHETIC]
+    basis_rows = live or scripted
+    basis = MODE_LIVE if live else (MODE_SYNTHETIC if scripted else None)
+
+    scenarios = sorted({row["scenario"] for row in rows if row.get("scenario")})
+    dataset = next((row["dataset"] for row in rows if row.get("dataset")), None)
+
+    given = f"{len(scenarios)} scenario(s)" if scenarios else "no scenario ids recorded"
+    context = f"{len(rows)} run(s) recorded · {given}"
+    if dataset:
+        context += f" · dataset {_e(dataset)}"
+
+    by_id = {metric["id"]: metric for metric in metrics(basis_rows)}
+    if basis is None:
+        numbers = empty_state(
+            "No runs recorded, so there is nothing to headline.",
+            "Nothing is shown rather than four zeroes.",
+        )
+        basis_line = "no runs recorded — no benchmark number is available"
+    else:
+        picks = [
+            ("success", "SUCCESS"), ("repair", "REPAIRED"),
+            ("rejected", "REJECTED"), ("latency", "AVG LATENCY"),
+        ]
+        cards = [
+            {
+                "id": key,
+                "label": label,
+                "value": by_id[key]["display"],
+                "detail": (
+                    f"{by_id[key]['definition']} · n = {by_id[key]['n']}"
+                ),
+                "state": (
+                    "warning" if by_id[key]["caution"]
+                    else by_id[key]["state"]
+                ),
+            }
+            for key, label in picks
+        ]
+        numbers = fact_cards(
+            cards, css_class="gb-bench-headline", column_min=150,
+            value_size=T.SIZE_XL,
+        )
+        basis_line = (
+            f"over {len(basis_rows)} run(s) answered by a model"
+            if basis == MODE_LIVE else
+            f"over {len(basis_rows)} run(s) answered by the scripted reader — "
+            f"this is not model performance"
+        )
+
+    counts = {mode: len(buckets[mode]) for mode in (MODE_LIVE, MODE_SYNTHETIC, UNCLASSIFIED)}
+    chips = " ".join(
+        DS.status_chip(f"{MODE_LABELS[mode]} {counts[mode]}", MODE_STATES[mode])
         for mode in (MODE_LIVE, MODE_SYNTHETIC, UNCLASSIFIED)
-    }
+    )
     live_line = (
         f"{counts[MODE_LIVE]} live run(s) recorded — those are the only ones that "
         f"say anything about a model."
@@ -885,23 +1296,42 @@ def intro_html(sections: list[dict]) -> str:
              "run it with a reachable backend and this column fills with real "
              "measurements."
     )
-    modes = " · ".join(
-        DS.status_chip(f"{MODE_LABELS[mode]} {counts[mode]}", MODE_STATES[mode])
-        for mode in (MODE_LIVE, MODE_SYNTHETIC, UNCLASSIFIED)
-    )
+
     return shell(
-        f"<div style='display:flex;align-items:center;gap:{S.px(S.SM)};"
-        f"flex-wrap:wrap;margin-bottom:{S.px(S.MD)}'>{modes}</div>"
-        f"<div style='font-family:{T.FONT_SANS};font-size:{T.SIZE_BASE}px;"
-        f"color:{C.TEXT_SECONDARY};line-height:{T.LEADING_BASE}'>"
-        f"Two kinds of run are measured here, and they are never merged: "
-        f"<span style='color:{C.RUNNING}'>live</span> runs were answered by a "
-        f"model; <span style='color:{C.WARNING}'>synthetic</span> runs by this "
-        f"project's scripted reader, which calls nothing. "
-        f"{live_line}</div>"
+        f"<div style='display:flex;align-items:baseline;gap:{S.px(S.MD)};"
+        f"flex-wrap:wrap;margin-bottom:{S.px(S.XS)}'>"
+        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_LG}px;"
+        f"color:{C.TEXT_PRIMARY};letter-spacing:{T.TRACKING_WIDE}'>"
+        f"{PRODUCT.upper()}</span>"
+        f"<span style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
+        f"color:{C.TEXT_MUTED}'>{context}</span></div>"
+        f"<div style='font-family:{T.FONT_MONO};font-size:{T.SIZE_XS}px;"
+        f"color:{C.TEXT_SECONDARY};margin-bottom:{S.px(S.SM)}'>{basis_line}</div>"
+        + numbers
+        + sample_html(basis_rows)
+        + f"<div style='display:flex;align-items:center;gap:{S.px(S.SM)};"
+          f"flex-wrap:wrap;margin-top:{S.px(S.SM)}'>{chips}</div>"
+        + f"<div style='font-family:{T.FONT_SANS};font-size:{T.SIZE_SM}px;"
+          f"color:{C.TEXT_SECONDARY};line-height:{T.LEADING_BASE};"
+          f"margin-top:{S.px(S.SM)}'>Two kinds of run are measured here and never "
+          f"merged: <span style='color:{C.RUNNING}'>live</span> runs were "
+          f"answered by a model; <span style='color:{C.WARNING}'>synthetic</span> "
+          f"runs by this project's scripted reader, which calls nothing. "
+          f"{live_line}</div>"
+        + _tooltip_help()
+    )
+
+
+def _tooltip_help() -> str:
+    """One visible sentence saying the numbers explain themselves on hover."""
+    return (
+        f"<div style='font-family:{T.FONT_SANS};font-size:{T.SIZE_XS}px;"
+        f"color:{C.TEXT_MUTED};margin-top:{S.px(S.XS)}'>"
+        f"Every number carries its definition — hover it, or read the line under "
+        f"each card, before comparing anything.</div>"
     )
 
 
 def panel(body: str) -> str:
     """The Benchmark tab's container."""
-    return DS.panel(body, title="Benchmark Lab")
+    return DS.panel(body, title=PRODUCT)

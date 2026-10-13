@@ -38,6 +38,28 @@ streamlit run app.py
 Without a Gemini key the app still runs Local (Ollama) and the scripted dry
 modes; the API engine fails with a readable message before any network call.
 
+## RobotBench
+
+The **Benchmark** tab is RobotBench: it evaluates AI-generated robot plans
+against deterministic simulation scenarios, and it measures nine things —
+success rate, verification rejection rate, repair rate, repair success rate,
+average actions, average attempts, latency, collision rate and boundary
+violation rate.  Every metric shows its denominator, its definition (as a
+tooltip and as a line on the card) and how many runs it rests on.
+
+```bash
+python3 -m gemmabot.benchmark --dry                 # scripted reader, no network
+python3 -m gemmabot.benchmark --backend both        # real models
+```
+
+The runner writes `benchmarks/results.json` (one record per run, each naming its
+dataset, scenario, timestamp and the `run_id` it logged) and
+`benchmarks/report.json` / `report.md` (one **result** per comparable cell:
+dataset, model, backend, mode, timestamp, run count, success and failure counts
+and latency statistics).  A `--dry` run is recorded as `mode: synthetic` and is
+never displayed as model performance.  Below 30 runs a result is marked as too
+small a sample to compare, because it is.
+
 ## Test
 
 Run the test suite (no network required):

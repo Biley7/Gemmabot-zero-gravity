@@ -58,6 +58,7 @@ import copy
 from typing import Callable
 
 from backend.guard.contracts import ApprovedPlan
+from gemmabot.simulator import DELTA, SIZE
 from frontend.components import animations as A
 from frontend.panels.engine import execute_approved, simulate
 
@@ -82,6 +83,41 @@ def kind_of(timeline: dict) -> str:
     """A timeline's playback kind, defaulting to the cautious one."""
     kind = str((timeline or {}).get("kind") or KIND_PREVIEW)
     return kind if kind in KINDS else KIND_PREVIEW
+
+
+# What stopped an execution — the two failures the benchmark counts separately.
+# The simulator reports both as "blocked", so which one it was has to be worked
+# out from the cell the robot was about to enter.
+HALT_COLLISION = "collision"   # a wall stands in the way
+HALT_BOUNDARY = "boundary"     # the next cell is off the grid
+
+
+def halt_kind(timeline: dict | None) -> str | None:
+    """What stopped a run that the simulator halted: a wall or the grid edge.
+
+    Read off the halted step itself: the cell the robot was about to enter is
+    the cell it stopped on plus its facing, and that cell is compared with the
+    world's walls and the grid.  A run the simulator never stopped — or one that
+    stopped for a reason other than a block — returns ``None``: it is neither a
+    collision nor a boundary violation, and counting it as either would invent
+    an event that did not happen.
+    """
+    if not isinstance(timeline, dict) or timeline.get("halted") != "blocked":
+        return None
+    world = timeline.get("world") if isinstance(timeline.get("world"), dict) else {}
+    position = timeline.get("halted_at") or timeline.get("final")
+    if not isinstance(position, (list, tuple)) or len(position) != 2:
+        return None
+    direction = str(timeline.get("final_dir") or world.get("dir") or "E")
+    dx, dy = DELTA.get(direction, (0, 0))
+    try:
+        cell = [int(position[0]) + dx, int(position[1]) + dy]
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= cell[0] < SIZE and 0 <= cell[1] < SIZE):
+        return HALT_BOUNDARY
+    walls = world.get("walls") if isinstance(world.get("walls"), list) else []
+    return HALT_COLLISION if cell in walls else None
 
 
 # ---------------------------------------------------------------------------

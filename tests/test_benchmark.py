@@ -148,12 +148,22 @@ def test_success_rate_counts_the_runs_that_have_an_outcome():
     assert "2 of 3" in metric["detail"]
 
 
+# The metrics that are a share of something, and so read "no data" rather than
+# "—" when there is nothing to divide by.
+RATE_METRICS = ("success", "rejected", "repair", "repair_success",
+                "collision", "boundary")
+
+
 def test_no_runs_means_no_rate_not_a_zero_rate():
+    seen = set()
     for metric in benchmark.metrics([]):
+        seen.add(metric["id"])
         assert metric["value"] is None
         assert metric["n"] == 0
-        assert metric["display"] == "no data" if metric["id"] in (
-            "success", "repair") else metric["display"] == "—"
+        assert metric["display"] == (
+            "no data" if metric["id"] in RATE_METRICS else "—"
+        )
+    assert seen == set(RATE_METRICS) | {"latency", "actions", "attempts"}
 
 
 def test_a_run_without_an_outcome_is_excluded_not_counted_as_a_failure():
@@ -317,7 +327,8 @@ def test_series_split_by_backend_and_repair_setting():
         "Scripted (dry mode) · max_tries=3",
     }
     assert all(
-        set(group["metrics"]) == {"success", "repair", "latency", "actions", "attempts"}
+        set(group["metrics"]) == set(RATE_METRICS)
+        | {"latency", "actions", "attempts"}
         for group in benchmark.series(rows)
     )
 
@@ -342,19 +353,24 @@ def test_cells_exist_only_for_sources_that_recorded_a_case():
 def test_the_minimal_chart_draws_one_row_per_series_and_per_rate():
     rows = benchmark.rows([_record(mode="live"), _record(mode="live")])
     html = benchmark.chart_minimal(rows)
-    assert html.count("gb-bench-min-row") == 2       # success + repair
+    # success + repair + rejected: the loop's own story
+    assert html.count("gb-bench-min-row") == 3
     assert "67%" not in html and "n=2" in html
     assert "share one 0" in html or "one 0" in html  # the shared-scale note
 
 
 def test_the_minimal_chart_does_not_draw_a_zero_bar_for_no_data():
+    """0% and *no data* are different statements and are drawn differently."""
     rows = benchmark.rows([{"backend": "api", "mode": "live", "success": True,
                             "attempts": None, "latency": None, "actions": None}])
     html = benchmark.chart_minimal(rows)
-    assert "no data" in html
-    # The success bar is drawn; the repair bar is not.
-    assert html.count("gb-bench-min-row") == 2
-    assert html.count("background:#4a8fff") == 1
+    # Success is 100% and rejection is a real 0% — the verifier refused nothing,
+    # which is a measurement.  Repair has no data and gets no bar at all.
+    assert html.count("gb-bench-min-row") == 3
+    assert html.count("background:#4a8fff") == 2
+    # The one unmeasured row says so twice — where its bar would be and where
+    # its value would be — and never as a zero-length bar.
+    assert html.count("no data") == 2
 
 
 def test_a_chart_of_one_mode_never_carries_the_other_mode_series():
@@ -367,10 +383,11 @@ def test_a_chart_of_one_mode_never_carries_the_other_mode_series():
 
 def test_the_technical_chart_is_small_multiples_one_panel_per_metric():
     html = benchmark.chart_technical(benchmark.rows([_record(mode="live")]))
-    assert html.count("gb-bench-tech-panel") == 5
-    for key in ("success", "repair", "latency", "actions", "attempts"):
+    assert html.count("gb-bench-tech-panel") == 9
+    for key in ("success", "rejected", "repair", "repair_success", "collision",
+                "boundary", "latency", "actions", "attempts"):
         assert f"data-panel='{key}'" in html
-    assert html.count("gb-bench-tech-row") == 5
+    assert html.count("gb-bench-tech-row") == 9
     assert "data-n='1'" in html
     assert "not comparable" in html
 
@@ -423,7 +440,10 @@ def test_an_unmeasured_metric_is_absent_from_the_technical_chart():
         _record(mode="live", latency=None, actions=None),
     ]))
     assert "no data (1 run(s) unmeasured)" in html
-    assert html.count("no data (1 run(s) unmeasured)") == 2
+    # latency, rejection and the two execution metrics have nothing to measure
+    # here; the run recorded no world to reproduce, no attempt verdict and no
+    # latency.  None of them is drawn as a zero-length bar.
+    assert html.count("no data (1 run(s) unmeasured)") == 4
 
 
 def test_both_charts_say_so_when_there_is_nothing_to_chart():
@@ -483,17 +503,17 @@ def test_an_empty_source_says_it_is_empty():
     assert "Nothing recorded here yet." in html
 
 
-def test_the_intro_says_so_when_no_live_run_exists():
+def test_the_headline_says_so_when_no_live_run_exists():
     sections = [_section([{"backend": "dry", "mode": "synthetic",
                            "success": True, "attempts": 1, "latency": 0.0}])]
-    html = benchmark.intro_html(sections)
+    html = benchmark.headline_html(sections)
     assert "No live run has been recorded" in html
     assert "python -m gemmabot.benchmark --backend both" in html
     assert "SYNTHETIC 1" in html
 
 
-def test_the_intro_reports_live_runs_when_there_are_any():
-    html = benchmark.intro_html([_section([_record(mode="live")])])
+def test_the_headline_reports_live_runs_when_there_are_any():
+    html = benchmark.headline_html([_section([_record(mode="live")])])
     assert "1 live run(s) recorded" in html
     assert "No live run has been recorded" not in html
 
@@ -509,7 +529,7 @@ def test_the_caveats_name_the_limits_of_the_numbers():
 
 def test_the_panel_is_a_design_system_panel():
     html = benchmark.panel("<div>body</div>")
-    assert "gb-panel" in html and "Benchmark Lab" in html
+    assert "gb-panel" in html and benchmark.PRODUCT in html
 
 
 def test_rendering_the_whole_view_touches_no_model(no_model):
@@ -518,7 +538,7 @@ def test_rendering_the_whole_view_touches_no_model(no_model):
         _record(mode="live"), _record(mode="synthetic", backend="dry"),
     ])
     body = (
-        benchmark.intro_html([section])
+        benchmark.headline_html([section])
         + benchmark.caveats_html([section])
         + benchmark.section_html(section)
     )
@@ -660,3 +680,354 @@ def test_saved_results_carry_the_mode_into_the_artifact(tmp_path):
     assert "| Mode |" in markdown
     assert "synthetic" in markdown
     assert "answered by a model" in markdown
+
+
+# ---------------------------------------------------------------------------
+# RobotBench — the four outcome metrics
+# ---------------------------------------------------------------------------
+
+def test_the_rejection_rate_is_measured_over_the_runs_the_verifier_judged():
+    refused = _record(success=False, attempts=2, history=[
+        {"attempt": 1, "ok": False, "feedback": "hit the wall"},
+        {"attempt": 2, "ok": False, "feedback": "hit the wall again"},
+    ])
+    fixed = _record(success=True, attempts=2, history=[
+        {"attempt": 1, "ok": False, "feedback": "hit the wall"},
+        {"attempt": 2, "ok": True, "feedback": "ok"},
+    ])
+    metric = _metric(benchmark.rows([refused, fixed]), "rejected")
+    assert metric["value"] == pytest.approx(0.5)
+    assert metric["display"] == "50%"
+    assert metric["n"] == 2
+    assert metric["excluded"] == 0
+    assert metric["detail"] == (
+        "1 of 2 runs ended with no verified plan · 3 of 4 attempts refused "
+        "by the verifier"
+    )
+
+
+def test_a_failure_with_no_refusal_on_record_is_not_counted_as_rejection():
+    """A backend error is not the verifier refusing a plan."""
+    metric = _metric(benchmark.rows([
+        {"backend": "api", "mode": "live", "success": False, "latency": 1.0},
+    ]), "rejected")
+    assert metric["value"] is None
+    assert metric["n"] == 0
+    assert metric["excluded"] == 1
+    assert metric["display"] == "no data"
+
+
+def test_repair_success_is_measured_over_the_runs_that_needed_repair():
+    rows = benchmark.rows([
+        _record(success=True, attempts=2),
+        _record(success=False, attempts=3),
+        _record(success=True, attempts=1),
+    ])
+    metric = _metric(rows, "repair_success")
+    assert metric["value"] == pytest.approx(0.5)
+    assert metric["display"] == "50%"
+    assert metric["n"] == 2
+    assert metric["detail"] == "1 of 2 repaired runs still passed the verifier"
+    # The run that needed no repair is outside the population, not a failure.
+    assert _metric(rows, "repair")["value"] == pytest.approx(2 / 3)
+
+
+def _world(**overrides):
+    from gemmabot.simulator import new_world
+
+    world = copy.deepcopy(new_world())
+    world.update(overrides)
+    return world
+
+
+def test_a_plan_stopped_by_a_wall_is_a_collision_not_a_boundary():
+    # The default world waits with a wall at [3, 0]; forward 7 stops at [2, 0].
+    record = _record(world=_world(), actions=[{"cmd": "forward", "steps": 7}])
+    rows = benchmark.rows([record])
+    collision = _metric(rows, "collision")
+    boundary = _metric(rows, "boundary")
+    assert collision["value"] == 1.0
+    assert boundary["value"] == 0.0
+    assert collision["n"] == boundary["n"] == 1
+    assert collision["detail"] == (
+        "1 of 1 runs proposed a plan the simulator stopped at an obstacle · "
+        "1 of 1 reproduced plans hit one"
+    )
+    assert boundary["detail"] == (
+        "0 of 1 runs proposed a plan the simulator stopped at the edge of the "
+        "grid · 0 of 1 reproduced plans left it"
+    )
+
+
+def test_a_plan_that_stepped_off_the_grid_is_a_boundary_violation():
+    # No walls: from [5, 0] facing East, "forward 7" walks to the edge at x=7
+    # and the next step would leave the grid.
+    record = _record(
+        world=_world(walls=[], goal=[7, 1], robot=[5, 0]),
+        actions=[{"cmd": "forward", "steps": 7}],
+    )
+    rows = benchmark.rows([record])
+    assert _metric(rows, "boundary")["value"] == 1.0
+    assert _metric(rows, "collision")["value"] == 0.0
+
+
+def test_a_run_with_no_world_to_replay_is_not_counted_as_a_collision():
+    record = _record(world=None, actions=[{"cmd": "forward", "steps": 7}])
+    metric = _metric(benchmark.rows([record]), "collision")
+    assert metric["value"] is None
+    assert metric["n"] == 0
+    assert metric["excluded"] == 1
+    assert metric["detail"] == (
+        "no run recorded a world and a plan to reproduce"
+    )
+
+
+def test_an_execution_metric_is_absent_for_a_run_that_never_blocked():
+    """A plan that ran clean is a 0% collision rate — not a missing reading."""
+    record = _record(
+        world=_world(walls=[], goal=[1, 0]),
+        actions=[{"cmd": "forward", "steps": 1}],
+    )
+    metric = _metric(benchmark.rows([record]), "collision")
+    assert metric["value"] == 0.0
+    assert metric["n"] == 1
+    assert metric["display"] == "0%"
+
+
+# ---------------------------------------------------------------------------
+# RobotBench — every number explains itself
+# ---------------------------------------------------------------------------
+
+def test_every_metric_carries_a_definition_and_a_tooltip():
+    for metric in benchmark.metrics(benchmark.rows([_record()])):
+        assert metric["definition"] == benchmark.DEFINITIONS[metric["id"]]
+        assert metric["tooltip"] == benchmark.TOOLTIPS[metric["id"]]
+        assert len(metric["tooltip"]) > len(metric["definition"])
+        assert metric["tooltip"].endswith(".")
+
+
+def test_a_card_below_the_sample_floor_says_it_cannot_be_compared():
+    html = benchmark.metrics_html(benchmark.rows([_record(mode="live")]))
+    assert "data-caution='true'" in html
+    assert f"below the {benchmark.MIN_SAMPLE}-run floor" in html
+    assert "no comparison" in html
+    # The long explanation rides on the card as a tooltip, not only in a legend.
+    assert "A run counts as a success when its plan passed the verifier" in html
+
+
+def test_a_card_at_or_above_the_floor_carries_no_caution():
+    rows = benchmark.rows([_record(mode="live")] * benchmark.MIN_SAMPLE)
+    html = benchmark.metrics_html(rows)
+    assert "data-caution='true'" not in html
+    assert f"below the {benchmark.MIN_SAMPLE}-run floor" not in html
+
+
+def test_the_sample_line_says_when_the_numbers_may_not_be_compared():
+    small = benchmark.sample_html(benchmark.rows([_record()]))
+    assert "data-comparable='false'" in small
+    assert "must not be used to rank one model above another" in small
+
+    big = benchmark.rows([_record()] * benchmark.MIN_SAMPLE)
+    assert "data-comparable='true'" in benchmark.sample_html(big)
+
+
+# ---------------------------------------------------------------------------
+# RobotBench — the headline never merges the two modes
+# ---------------------------------------------------------------------------
+
+def test_the_headline_numbers_come_from_the_live_runs_only():
+    sections = [
+        _section([
+            _record(mode="live", success=True, latency=1.0),
+            _record(mode="live", success=False, latency=1.0),
+        ]),
+        _section([
+            _record(mode="synthetic", backend="dry", success=False, latency=0.001),
+            _record(mode="synthetic", backend="dry", success=False, latency=0.002),
+        ]),
+    ]
+    html = benchmark.headline_html(sections)
+    assert benchmark.PRODUCT.upper() in html
+    assert "over 2 run(s) answered by a model" in html
+    # Half the live runs passed; the scripted failures below them are not the
+    # headline's success rate.
+    assert "data-fact='success' data-value='50%'" in html
+    assert "data-fact='success' data-value='0%'" not in html
+
+
+def test_the_headline_says_so_when_only_scripted_runs_exist():
+    sections = [_section([
+        _record(mode="synthetic", backend="dry", success=True, latency=0.001),
+    ])]
+    html = benchmark.headline_html(sections)
+    assert "answered by the scripted reader" in html
+    assert "this is not model performance" in html
+
+
+def test_the_headline_shows_nothing_rather_than_zeroes_when_nothing_ran():
+    html = benchmark.headline_html([_section(rows=[])])
+    assert "nothing to headline" in html
+    assert "Nothing is shown rather than four zeroes." in html
+    assert "no benchmark number is available" in html
+
+
+def test_the_headline_counts_the_scenarios_it_covers():
+    sections = [_section([
+        _record(mode="live", scenario="default_map", dataset="gemmabot-grid-v1"),
+        _record(mode="live", scenario="tricky_pocket", dataset="gemmabot-grid-v1"),
+    ])]
+    html = benchmark.headline_html(sections)
+    assert "2 scenario(s)" in html
+    assert "2 run(s) recorded" in html
+    assert "gemmabot-grid-v1" in html
+
+
+def test_a_row_keeps_the_identifiers_an_audit_needs():
+    row = benchmark.rows([{
+        "dataset": "gemmabot-grid-v1", "scenario": "default_map",
+        "case": "default_map", "model": "gemma-x", "backend": "api",
+        "mode": "live", "timestamp": "2026-10-13T00:00:00+00:00",
+        "run_id": "abc123def456", "success": True, "attempts": 1,
+        "latency": 1.0, "history": [],
+    }])[0]
+    assert row["dataset"] == "gemmabot-grid-v1"
+    assert row["scenario"] == "default_map"
+    assert row["model"] == "gemma-x"
+    assert row["run_id"] == "abc123def456"
+    assert row["timestamp"].startswith("2026-10-13")
+
+
+def test_the_lab_and_the_runner_share_the_sample_floor():
+    from gemmabot import benchmark as runner
+    from gemmabot.config import BENCH_MIN_SAMPLE
+
+    assert benchmark.MIN_SAMPLE == runner.MIN_SAMPLE == BENCH_MIN_SAMPLE
+
+
+# ---------------------------------------------------------------------------
+# RobotBench — the runner's own results
+# ---------------------------------------------------------------------------
+
+def test_every_result_names_what_it_measured(tmp_path):
+    from gemmabot import benchmark as runner
+
+    _, results, _ = _run(tmp_path, dry=True)
+    records = runner.result_records(results)
+    assert len(records) == 1
+    record = records[0]
+    assert record["product"] == runner.PRODUCT
+    assert record["dataset"] == runner.DATASET_ID
+    assert record["scenarios"] == ["default_map"]
+    assert record["backend"] == "dry" and record["mode"] == "synthetic"
+    assert record["model"] is None          # no model answered a scripted run
+    assert record["timestamp"]
+    assert record["runs"] == 1
+    assert record["successes"] + record["failures"] == record["runs"]
+    assert record["run_ids"] == [results[0]["run_id"]]
+    assert set(record["latency"]) == {
+        "n", "excluded", "mean", "median", "p95", "min", "max",
+    }
+
+
+def test_a_per_run_record_can_be_traced_back_to_the_log(tmp_path):
+    from gemmabot import benchmark as runner
+    from gemmabot import logger as run_logger
+
+    _, results, log_path = _run(tmp_path, dry=True)
+    record = results[0]
+    logged = {entry["run_id"]: entry for entry in run_logger.load_runs(path=log_path)}
+    assert record["run_id"] in logged
+    assert record["dataset"] == runner.DATASET_ID
+    assert record["scenario"] == "default_map"
+    assert record["timestamp"]
+    # The logged run kept the world and the plan, so the result is replayable.
+    assert logged[record["run_id"]]["world"] is not None
+    assert logged[record["run_id"]]["actions"] is not None
+
+
+def test_a_result_below_the_floor_may_not_be_read_as_a_comparison():
+    from gemmabot import benchmark as runner
+
+    below = runner.sample_verdict(runner.MIN_SAMPLE - 1)
+    assert below["comparable"] is False
+    assert "must not be used to rank" in below["note"]
+    at = runner.sample_verdict(runner.MIN_SAMPLE)
+    assert at["comparable"] is True
+    assert "at or above" in at["note"]
+
+
+def test_latency_statistics_ignore_runs_that_measured_nothing():
+    from gemmabot import benchmark as runner
+
+    stats = runner.latency_stats([1.0, None, 3.0, "nope"])
+    assert stats["n"] == 2 and stats["excluded"] == 2
+    assert stats["mean"] == 2.0 and stats["median"] == 2.0
+    assert stats["min"] == 1.0 and stats["max"] == 3.0
+    assert stats["p95"] == 3.0          # two points: the upper one is the p95
+    empty = runner.latency_stats([])
+    assert empty["mean"] is None and empty["n"] == 0
+
+
+def test_a_synthetic_result_is_reproduced_without_naming_a_model():
+    from gemmabot import benchmark as runner
+
+    assert runner.reproduce_command("synthetic", "dry", 5) == \
+        "python -m gemmabot.benchmark --dry --runs 5"
+    assert runner.reproduce_command("live", "api", 5) == \
+        "python -m gemmabot.benchmark --backend api --runs 5"
+
+
+def test_the_report_is_saved_beside_the_results_the_lab_reads(tmp_path):
+    import json
+    from pathlib import Path
+
+    from gemmabot import benchmark as runner
+
+    _, results, _ = _run(tmp_path, dry=True)
+    out = tmp_path / "benchmarks" / "results.json"
+    paths = runner.save_results(results, path=str(out))
+    assert set(paths) == {"results", "summary", "report", "report_markdown"}
+
+    report = json.loads(Path(paths["report"]).read_text(encoding="utf-8"))
+    assert report[0]["product"] == runner.PRODUCT
+    assert report[0]["dataset"] == runner.DATASET_ID
+
+    markdown = Path(paths["report_markdown"]).read_text(encoding="utf-8")
+    assert runner.DATASET_ID in markdown
+    assert "Insufficient sample" in markdown
+    assert "must not be used to rank one model above another" in markdown
+
+
+def test_the_dataset_lists_the_scenarios_it_measures():
+    from gemmabot import benchmark as runner
+
+    found = runner.dataset()
+    assert found["id"] == runner.DATASET_ID
+    assert found["scenarios"] == [case["name"] for case in runner.TEST_CASES]
+    assert len(found["scenarios"]) >= 5
+
+
+def test_collisions_are_measured_over_the_refused_attempts_too():
+    """The accepted plan passed the verifier; the attempts are what collided."""
+    record = _record(world=_world(), actions=DEFAULT_PLAN, history=[
+        {"attempt": 1, "ok": False, "feedback": "blocked at [2, 0]",
+         "actions": [{"cmd": "forward", "steps": 7}]},
+        {"attempt": 2, "ok": True, "feedback": "ok", "actions": DEFAULT_PLAN},
+    ])
+    metric = _metric(benchmark.rows([record]), "collision")
+    assert metric["value"] == 1.0
+    assert metric["detail"] == (
+        "1 of 1 runs proposed a plan the simulator stopped at an obstacle · "
+        "1 of 2 reproduced plans hit one"
+    )
+
+
+def test_the_accepted_plan_alone_cannot_collide():
+    """A verified plan is not evidence of anything: it passed by construction."""
+    record = _record(
+        world=_world(), actions=DEFAULT_PLAN,
+        history=[{"attempt": 1, "ok": True, "feedback": "ok"}],
+    )
+    metric = _metric(benchmark.rows([record]), "collision")
+    assert metric["value"] == 0.0
+    assert metric["n"] == 1

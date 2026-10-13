@@ -50,6 +50,12 @@ TEMPERATURE = 0.2
 DEFAULT_MAX_REPAIRS = 2
 MAX_REPAIRS = _int_env("MAX_REPAIRS", DEFAULT_MAX_REPAIRS)
 
+# RobotBench: the smallest sample whose numbers may be compared.  Below this
+# many runs, a difference between two series is noise, so the benchmark report
+# and the lab both say so rather than letting the numbers read as a verdict
+# about a model.  Overridable for a larger dataset; never lowered silently.
+BENCH_MIN_SAMPLE = _int_env("BENCH_MIN_SAMPLE", 30)
+
 # Model names (read from environment, with defaults)
 GEMMA_API_MODEL = os.getenv("GEMMA_API_MODEL", "gemma-4-26b-a4b-it")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
