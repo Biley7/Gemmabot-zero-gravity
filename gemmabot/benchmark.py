@@ -33,9 +33,25 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL
 from gemmabot.simulator import new_world
-from backend.verifier.harness import plan_with_repair
+from backend.verifier.harness import plan_with_repair, verify_plan
 from backend.logger.logger import log_run, redact_secrets
+
+
+def backend_model(backend: str) -> str | None:
+    """The model id a benchmark backend would call, or ``None``.
+
+    Read from ``gemmabot.config`` — the same values the app uses — so a logged
+    benchmark run names the model it measured.  A scripted (dry) run names none,
+    because no model replied to it.
+    """
+    name = (backend or "").strip().lower()
+    if name == "api":
+        return GEMMA_API_MODEL
+    if name in ("ollama", "local"):
+        return OLLAMA_MODEL
+    return None
 
 # ---------------------------------------------------------------------------
 # Test cases
@@ -297,6 +313,14 @@ def run_benchmark(
                     # Persist to log — with the world and the plan, so the run
                     # stays replayable, and with its mode, so the log separates
                     # scripted runs from real ones.
+                    # The verdict on the accepted plan, from the same verifier
+                    # the app runs.  A benchmark plans and verifies; it never
+                    # drives the robot, so ``ran`` is False rather than absent —
+                    # "this run did not execute" is a fact worth recording.
+                    report = (
+                        verify_plan(copy.deepcopy(case["world"]), actions)
+                        if actions is not None else None
+                    )
                     log_run(
                         instruction=case["instruction"],
                         backend=record["backend"],
@@ -307,6 +331,13 @@ def run_benchmark(
                         path=log_path,
                         world=copy.deepcopy(case["world"]),
                         mode=mode,
+                        input_type="benchmark",
+                        model=backend_model(record["backend"]),
+                        verification=(
+                            {"ok": report["ok"], "reason": report["reason"]}
+                            if report is not None else None
+                        ),
+                        execution={"ran": False, "halted": None, "steps": None},
                     )
 
                     status = "✓" if record["success"] else "✗"

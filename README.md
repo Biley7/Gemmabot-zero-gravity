@@ -74,3 +74,15 @@ The running architecture — `app.py` → `frontend/panels/engine.py` →
 `gemmabot/simulator.py` — is documented in `docs/ARCHITECTURE.md`; the canonical
 shapes are defined in `backend/guard/contracts.py` and described in
 `docs/CONTRACTS.md`.
+
+## Run History
+
+Every run is logged to `logs/runs.jsonl` with its structured metadata (run id,
+timestamp, input type, model, backend, attempts, plan length, verification and
+execution results, latency, final position, goal reached). The **Run History**
+tab filters those records (Success / Failed / Repaired / Vision / Text /
+Model/backend), opens any one as **VIEW RUN**, and **REPLAY**s it by feeding the
+recorded plan and world back through the simulator and the verifier alone — no
+model is called. Records are labelled **LIVE RUN**, **RECORDED RUN** or
+**SYNTHETIC BENCHMARK**, and no run is ever fabricated. A record written before
+these fields existed still lists, marked *not recorded*.

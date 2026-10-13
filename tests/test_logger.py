@@ -32,13 +32,23 @@ def test_a_record_carries_everything_a_replay_needs(log_path):
         latency=0.5, path=log_path, world=new_world(),
     )
     assert set(record) == {
-        "timestamp", "instruction", "backend", "success", "attempts", "latency",
-        "actions", "world", "mode", "history",
+        "run_id", "timestamp", "input_type", "instruction", "model", "backend",
+        "success", "attempts", "plan_length", "verification", "execution",
+        "latency", "final_position", "goal_reached", "actions", "world", "mode",
+        "history",
     }
     assert record["actions"] == PLAN
     assert record["world"] == new_world()
     assert record["success"] is True
     assert record["history"] == HISTORY
+    assert record["plan_length"] == len(PLAN)
+    assert len(record["run_id"]) == 12
+    # Everything this run did not measure is written as None rather than left
+    # out or filled in: a reader shows it as *not recorded* and never guesses.
+    for field in ("input_type", "model", "mode", "verification", "execution",
+                  "final_position", "goal_reached"):
+        assert record[field] is None, field
+    assert record["latency"] == 0.5
 
 
 def test_the_plan_and_world_are_captured_by_value(log_path):

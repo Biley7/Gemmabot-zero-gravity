@@ -4,6 +4,7 @@ These run the real script headlessly.  Model backends are patched with fakes
 so nothing touches the network or writes run logs.
 """
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,20 @@ def _button(at: AppTest, label: str):
         if button.label == label:
             return button
     raise AssertionError(f"button {label!r} not found; got {[b.label for b in at.button]}")
+
+
+def _log_rows(html: str) -> dict[str, dict[str, str]]:
+    """The run-log table's rows, by run number, with their data attributes.
+
+    Reads what the table actually renders, so the row's identity is checked as
+    a set rather than as one long string that any added attribute would break.
+    """
+    rows: dict[str, dict[str, str]] = {}
+    for attrs in re.findall(r"<div class='gb-replay-run'([^>]*)>", html):
+        found = dict(re.findall(r"data-([a-z-]+)='([^']*)'", attrs))
+        if "run" in found:
+            rows[found["run"]] = found
+    return rows
 
 
 def test_app_starts_without_exceptions():
@@ -578,18 +593,28 @@ def test_replay_tab_replays_a_logged_run_without_any_model_call(monkeypatch):
     assert not at.exception, [element.value for element in at.exception]
     assert at.session_state["log_replay"] is None
 
-    # The log table states run, backend, latency and attempts for every entry.
+    # The log table states run, provenance, backend, latency and attempts for
+    # every entry, on the row itself.
     rendered = "\n".join(element.value for element in at.markdown)
-    assert ("data-run='2' data-backend='dry' data-latency='0.00 s' "
-            "data-attempts='2' data-replayable='true'") in rendered
-    assert "data-run='1' data-backend='api' data-latency='2.41 s'" in rendered
-    assert "data-attempts='1' data-replayable='false'" in rendered
+    rows = _log_rows(rendered)
+    # Neither record recorded a mode, so neither claims a provenance it does not
+    # have — both are shown as recorded, never as live or synthetic.
+    assert rows["2"] == {
+        "run": "2", "provenance": "recorded", "run-id": "", "input": "",
+        "backend": "dry", "latency": "0.00 s", "attempts": "2",
+        "replayable": "true",
+    }
+    assert rows["1"] == {
+        "run": "1", "provenance": "recorded", "run-id": "", "input": "",
+        "backend": "api", "latency": "2.41 s", "attempts": "1",
+        "replayable": "false",
+    }
     assert "not replayable" in rendered
 
     # A record with no world offers no replay at all.
     runs_box = _selectbox(at, "Run")
     runs_box.select(runs_box.options[1]).run()
-    assert _button(at, "Replay").disabled is True
+    assert _button(at, "REPLAY").disabled is True
     captions = "\n".join(element.value for element in at.caption)
     assert "Not replayable — logged before the world was captured" in captions
 
@@ -598,7 +623,7 @@ def test_replay_tab_replays_a_logged_run_without_any_model_call(monkeypatch):
     _selectbox(at, "Plan to replay").select(
         "Attempt 2 — accepted · 6 actions"
     ).run()
-    _button(at, "Replay").click().run()
+    _button(at, "REPLAY").click().run()
     assert not at.exception, [element.value for element in at.exception]
 
     shown = at.session_state["log_replay"]
@@ -665,7 +690,7 @@ def test_replay_picker_follows_a_newly_logged_replayable_run(monkeypatch):
     assert not at.exception, [element.value for element in at.exception]
     # The only run in the log cannot be replayed, so Replay is disabled.
     assert _selectbox(at, "Run").value.startswith("Run 1 · ")
-    assert _button(at, "Replay").disabled is True
+    assert _button(at, "REPLAY").disabled is True
 
     # A replayable run is logged: the picker follows it, instead of stranding
     # the user on a record whose Replay button is disabled.
@@ -675,12 +700,12 @@ def test_replay_picker_follows_a_newly_logged_replayable_run(monkeypatch):
     runs_box = _selectbox(at, "Run")
     assert runs_box.value == runs_box.options[0]
     assert runs_box.value.startswith("Run 2 · Scripted (dry mode) · 0.10 s · 2")
-    assert _button(at, "Replay").disabled is False
+    assert _button(at, "REPLAY").disabled is False
 
     # A run the user picked by hand is never overridden by the default.
     runs_box.select(runs_box.options[1]).run()
     assert _selectbox(at, "Run").value.startswith("Run 1 · ")
-    assert _button(at, "Replay").disabled is True
+    assert _button(at, "REPLAY").disabled is True
     log["records"] = [legacy, fresh, dict(fresh, instruction="a third run")]
     at.run()
     assert _selectbox(at, "Run").value.startswith("Run 1 · ")
@@ -690,7 +715,7 @@ def test_replay_picker_follows_a_newly_logged_replayable_run(monkeypatch):
     # previous run's plan under the new run's name.
     runs_box = _selectbox(at, "Run")
     runs_box.select(runs_box.options[0]).run()
-    assert _button(at, "Replay").disabled is False
+    assert _button(at, "REPLAY").disabled is False
     assert _selectbox(at, "Plan to replay").value == (
         "Attempt 1 — rejected · 1 action"
     )
@@ -774,7 +799,7 @@ WIRED_SHORTCUTS = {
     "Run plan": ("ctrl+enter", "Mod+Enter"),
     "Run safety check": ("ctrl+shift+enter", "Mod+Shift+Enter"),
     "Read map": ("ctrl+shift+m", "Mod+Shift+M"),
-    "Replay": ("ctrl+shift+l", "Mod+Shift+L"),
+    "REPLAY": ("ctrl+shift+l", "Mod+Shift+L"),
 }
 
 # Reserved combos the browser swallows before the page sees them, and the keys
@@ -988,7 +1013,8 @@ def test_a_dry_safety_run_is_logged_with_synthetic_provenance(monkeypatch):
     captured: list[tuple] = []
     monkeypatch.setattr(
         run_logger, "log_run",
-        lambda *args, **kwargs: captured.append((args, kwargs)) or {},
+        lambda *args, **kwargs: (captured.append((args, kwargs))
+                                 or {"run_id": "abc123abc123"}),
     )
 
     at = _run_app()
@@ -1002,6 +1028,17 @@ def test_a_dry_safety_run_is_logged_with_synthetic_provenance(monkeypatch):
     assert args[1] == "dry"                          # the planner that really ran
     assert kwargs["mode"] == "synthetic"             # and its real provenance
     assert kwargs["world"] == new_world()            # a dry run uses the default world
+    # The lab records what it measured: how the run was asked, the verifier's
+    # own verdict, and the fact that it never drove the robot.
+    assert kwargs["input_type"] == "text"
+    assert kwargs["verification"]["ok"] is True
+    assert kwargs["execution"] == {"ran": False, "halted": None, "steps": None}
+    # It drove nothing, so there is no position or outcome to claim — the
+    # logger writes both as not recorded either way.
+    assert kwargs.get("final_position") is None
+    assert kwargs.get("goal_reached") is None
+    # The record's own id is what makes the history label it this session's run.
+    assert at.session_state["session_run_id"] == "abc123abc123"
 
 
 def test_reset_world_clears_every_run_result(monkeypatch):
@@ -1037,3 +1074,74 @@ def test_reset_world_clears_every_run_result(monkeypatch):
     assert at.session_state["last_run"] is None
     assert at.session_state["logs"] == []
     assert at.session_state["vision_loaded"] is False
+
+
+def test_view_run_shows_the_record_s_own_twelve_fields(monkeypatch):
+    """VIEW RUN reads the record: nothing is filled in from the live app."""
+    from gemmabot import logger as run_logger
+    from gemmabot.simulator import new_world
+
+    record = {
+        "run_id": "feedfacecafe",
+        "timestamp": "2026-10-08T12:00:00+00:00",
+        "input_type": "vision",
+        "instruction": "read from the photo",
+        "model": "gemma-3-27b-it",
+        "backend": "api",
+        "success": True,
+        "attempts": 2,
+        "plan_length": len(DEFAULT_WORLD_PLAN),
+        "verification": {"ok": True, "reason": "ok"},
+        "execution": {"ran": True, "halted": None,
+                      "steps": len(DEFAULT_WORLD_PLAN)},
+        "latency": 1.5,
+        "final_position": [6, 5],
+        "goal_reached": True,
+        "actions": list(DEFAULT_WORLD_PLAN),
+        "world": new_world(),
+        "mode": "live",
+        "history": [
+            {"attempt": 1, "prompt": "p", "reply": "r", "ok": False,
+             "feedback": "blocked", "actions": [{"cmd": "forward", "steps": 7}]},
+            {"attempt": 2, "prompt": "p2", "reply": "r2", "ok": True,
+             "feedback": "ok", "actions": list(DEFAULT_WORLD_PLAN)},
+        ],
+    }
+    monkeypatch.setattr(run_logger, "load_runs",
+                        lambda path=None, **kwargs: [record])
+    monkeypatch.setattr(run_logger, "summarize_run", lambda item: "summary")
+
+    at = _run_app()
+    assert not at.exception, [element.value for element in at.exception]
+    # The picker opened on the only run there is.
+    assert _selectbox(at, "Run").value.startswith("Run 1 · ")
+    _button(at, "VIEW RUN").click().run()
+    assert not at.exception, [element.value for element in at.exception]
+
+    rendered = "\n".join(element.value for element in at.markdown)
+    fields = dict(re.findall(r"data-field='([a-z_]+)' data-value='([^']*)'",
+                             rendered))
+    # The readouts beside the grid carry their own fields (plan, attempt); this
+    # asserts the twelve the record supplies, and every one of them.
+    expected = {
+        "run_id": "feedfacecafe",
+        "timestamp": "2026-10-08 12:00:00 UTC",
+        "input_type": "Vision",
+        "model": "gemma-3-27b-it",
+        "backend": "API (Gemini)",
+        "attempts": "2",
+        "plan_length": "6 actions",
+        "verification": "✓ verified",
+        "execution": "executed",
+        "latency": "1.50 s",
+        "final_position": "[6, 5]",
+        "goal_reached": "✓ yes",
+    }
+    assert {field: fields[field] for field in expected} == expected
+    # A model answered this run, but it is read out of the log: it is a
+    # RECORDED run, never the live one this session just made.
+    assert "data-provenance='recorded'" in rendered
+    assert "RECORDED RUN" in rendered
+    assert "data-provenance='live'" not in rendered
+    # What a replay of it reproduces is stated before any replay is run.
+    assert "data-agrees='true'" in rendered

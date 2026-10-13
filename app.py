@@ -61,7 +61,7 @@ from frontend.components import components as DS
 from frontend.components import colors as C
 from frontend.components import spacing as S
 from frontend.components import typography as T
-from frontend.components.blocks import empty_state, fact_cards
+from frontend.components.blocks import empty_state, escape as _e, fact_cards
 from frontend.console import guard as guard_console
 from frontend.console import pipeline as console
 from frontend.console import shell as console_shell
@@ -169,7 +169,7 @@ def _init_state() -> None:
     st.session_state.setdefault("log_replay", None)
     st.session_state.setdefault("log_replay_autoplay", False)
     st.session_state.setdefault("replay_run", None)
-    st.session_state.setdefault("replay_auto_run", None)
+    st.session_state.setdefault("replay_run_pick", None)
     st.session_state.setdefault("replay_plan_run", None)
 
 
@@ -217,13 +217,25 @@ def _reset_world() -> None:
     _adopt_world(st.session_state.map_name)
 
 
+def _remember_run_pick() -> None:
+    """Remember a run the user picked by hand in the Run History.
+
+    Runs as the picker's ``on_change``, i.e. before the tree is rebuilt, so the
+    Run History can tell a chosen run from the one it defaulted to and stop
+    following the log for as long as that choice is on screen.
+    """
+    picked = st.session_state.get("replay_run")
+    if isinstance(picked, str) and picked:
+        st.session_state.replay_run_pick = picked
+
+
 def _shortcut_rows() -> list[tuple[str, str]]:
     """The shortcut reference, read from the same dict the buttons use."""
     return [
         ("Run plan", SHORTCUTS["plan"]),
         ("Run safety check", SHORTCUTS["safety"]),
         ("Read map", SHORTCUTS["read_map"]),
-        ("Replay", SHORTCUTS["replay"]),
+        ("REPLAY", SHORTCUTS["replay"]),
     ]
 
 
@@ -899,7 +911,13 @@ with tabs["Mission"]:
             }
             if HAVE_LOGGER:
                 try:
-                    run_logger.log_run(
+                    # The structured record of this run: what asked (text), what
+                    # replied, what was planned, what the verifier said and what
+                    # the robot actually did.  Everything comes from the run's
+                    # own artifacts, and a value the run does not have is None —
+                    # never a plausible-looking default.
+                    verdict = result.get("verification") or {}
+                    logged = run_logger.log_run(
                         instruction,
                         result["backend"],
                         result["actions"],
@@ -911,7 +929,27 @@ with tabs["Mission"]:
                         # Provenance, recorded while we still know it: the
                         # benchmark cannot guess it afterwards.
                         mode=engine.backend_mode(backend),
+                        input_type="text",
+                        model=engine.backend_model(result["backend"]),
+                        verification={
+                            "ok": verdict.get("ok"),
+                            "reason": verdict.get("reason") or result["error"] or "",
+                        },
+                        execution={
+                            "ran": ran,
+                            "halted": replay.get("halted") if replay else None,
+                            "steps": len(replay["steps"]) if replay else None,
+                        },
+                        final_position=(
+                            replay.get("final") if replay else None
+                        ),
+                        goal_reached=(
+                            bool(replay.get("reached")) if replay else None
+                        ),
                     )
+                    # The id of the run this session just made: it is what lets
+                    # the history label that one record a LIVE RUN.
+                    st.session_state.session_run_id = logged.get("run_id")
                 except Exception as exc:  # noqa: BLE001
                     st.warning(f"Run log could not be written: {exc}")
 
@@ -1081,7 +1119,7 @@ with tabs["Safety Lab"]:
         }
         if HAVE_LOGGER:
             try:
-                run_logger.log_run(
+                logged = run_logger.log_run(
                     safety_instruction,
                     result["backend"],
                     result["actions"],
@@ -1091,7 +1129,20 @@ with tabs["Safety Lab"]:
                     path=str(LOG_PATH),
                     world=lab_world,
                     mode=engine.backend_mode(lab_backend),
+                    input_type="text",
+                    model=engine.backend_model(result["backend"]),
+                    verification={
+                        "ok": (result.get("verification") or {}).get("ok"),
+                        "reason": (result.get("verification") or {}).get("reason")
+                                  or result.get("error") or "",
+                    },
+                    # The lab demonstrates the loop; it never drives the robot,
+                    # so the honest record is that this run did not execute.
+                    execution={"ran": False, "halted": None, "steps": None},
                 )
+                # The id of the run this session just made: it is what lets the
+                # history label that one record a LIVE RUN.
+                st.session_state.session_run_id = logged.get("run_id")
             except Exception as exc:  # noqa: BLE001
                 st.warning(f"Run log could not be written: {exc}")
         st.rerun()
@@ -1274,6 +1325,30 @@ if HAVE_MAPVISION:
                     },
                 }
                 st.session_state.vision_loaded = False
+                if HAVE_LOGGER:
+                    try:
+                        # A vision run is an input-type run: an image was read
+                        # into a world.  There is no plan, so no verification,
+                        # execution, final position or goal-reached is recorded —
+                        # the world's own verdict lives in the attempt history.
+                        logged = run_logger.log_run(
+                            f"Read map from {held_image['name']}",
+                            result["backend"],
+                            None,
+                            result["attempts"],
+                            result["history"],
+                            latency=result["latency"],
+                            path=str(LOG_PATH),
+                            world=result["world"],
+                            mode=engine.backend_mode(result["backend"]),
+                            input_type="vision",
+                            model=engine.backend_model(result["backend"]),
+                        )
+                        # The id of the run this session just made: it is what
+                        # lets the history label that one record a LIVE RUN.
+                        st.session_state.session_run_id = logged.get("run_id")
+                    except Exception as exc:  # noqa: BLE001
+                        st.warning(f"Run log could not be written: {exc}")
                 st.session_state.last_run = {
                     "source": "vision",
                     "backend": result["backend"],
@@ -1576,7 +1651,43 @@ if HAVE_LOGGER:
             records = []
             st.warning(f"Could not read {LOG_PATH.name}: {exc}")
 
-        log_runs = replay_panel.runs(records)
+        all_runs = replay_panel.runs(
+            records,
+            session_run_id=st.session_state.get("session_run_id"),
+        )
+
+        # ── Filters ───────────────────────────────────────────────────────
+        # Five status/type filters and one value filter.  Nothing checked means
+        # every run; a record whose input type was never captured matches
+        # neither Text nor Vision, which the caption says out loud.
+        st.markdown(DS.section_title("Filters"), unsafe_allow_html=True)
+        filter_cols = st.columns(len(replay_panel.FILTERS), gap="small")
+        chosen: dict[str, object] = {}
+        for column, (key, label) in zip(filter_cols, replay_panel.FILTERS):
+            with column:
+                if key == "models":
+                    continue
+                chosen[key] = st.checkbox(
+                    label, key=f"history_filter_{key}",
+                    help=f"Show only runs that match {label.lower()}.",
+                )
+        statuses = tuple(
+            key for key in ("success", "failed", "repaired") if chosen.get(key)
+        )
+        inputs = tuple(key for key in ("vision", "text") if chosen.get(key))
+
+        model_options = sorted({replay_panel.model_key(item) for item in all_runs})
+        picked_models = st.multiselect(
+            "Model/backend", model_options, key="history_filter_models",
+            help="Show only runs from these models or backends.",
+        )
+
+        log_runs = [
+            item for item in all_runs
+            if replay_panel.matches(
+                item, statuses=statuses, inputs=inputs, models=tuple(picked_models)
+            )
+        ]
         ready = [item for item in log_runs if item["replayable"]]
 
         if not log_runs:
@@ -1597,11 +1708,24 @@ if HAVE_LOGGER:
                 ),
                 unsafe_allow_html=True,
             )
+        elif not log_runs:
+            st.markdown(
+                DS.card(
+                    f"<div style='font-family:{T.FONT_MONO};"
+                    f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY}'>"
+                    f"No run matches these filters. {len(all_runs)} run(s) are "
+                    "logged — clear a filter to see them.</div>",
+                    title="Filtered out",
+                ),
+                unsafe_allow_html=True,
+            )
         else:
             st.markdown(replay_panel.runs_html(log_runs), unsafe_allow_html=True)
             st.caption(
-                f"{len(log_runs)} run(s) in {LOG_PATH.relative_to(ROOT)} · "
-                f"{len(ready)} replayable · newest first"
+                f"{len(log_runs)} of {len(all_runs)} run(s) shown · "
+                f"{len(ready)} replayable · newest first · "
+                "a record whose input type was not captured matches neither "
+                "Text nor Vision"
             )
 
             run_labels = [
@@ -1612,18 +1736,30 @@ if HAVE_LOGGER:
             # Default the picker to the newest run that can actually be
             # replayed, so a run logged a moment ago is the one selected rather
             # than a legacy record that would only leave Replay disabled.  A run
-            # the user picked by hand is never overridden: a pick is told apart
-            # from a default by remembering what the default was last time.
+            # the user picked by hand is never overridden — it is remembered
+            # outside the widget, which is also what tells the two apart.
             auto_label = ready[0]["label"] if ready else run_labels[0]
-            if (
-                st.session_state.get("replay_run") not in run_labels
-                or st.session_state.get("replay_run")
-                == st.session_state.get("replay_auto_run")
-            ):
-                st.session_state.replay_run = auto_label
-            st.session_state.replay_auto_run = auto_label
+            chosen = st.session_state.get("replay_run_pick")
+            default_label = chosen if chosen in run_labels else auto_label
+            auto_index = (
+                run_labels.index(default_label)
+                if default_label in run_labels else 0
+            )
+            if st.session_state.get("replay_run") != default_label:
+                # Dropping the widget's own key is what moves a picker the
+                # browser already drew: ``index`` applies to a widget Streamlit
+                # is creating, so the default is applied by recreating it.
+                st.session_state.pop("replay_run", None)
 
-            picked_label = st.selectbox("Run", run_labels, key="replay_run")
+            picked_label = st.selectbox(
+                "Run",
+                run_labels,
+                index=auto_index,
+                key="replay_run",
+                on_change=_remember_run_pick,
+                help="Runs are listed newest first. The picker opens on the "
+                     "newest replayable run until you choose one yourself.",
+            )
             picked = log_runs[run_labels.index(picked_label)]
 
             # A plan is only offered for a run that can actually be replayed:
@@ -1643,47 +1779,143 @@ if HAVE_LOGGER:
                 )
                 plan = picked["plans"][plan_labels.index(plan_label)]
 
-            if picked["replayable"]:
+            # Two actions on the picked run.  VIEW RUN opens the record itself
+            # — its twelve fields and what a replay of it reproduces.  REPLAY
+            # drives the player.  Neither calls a model.
+            view_col, replay_col = st.columns([1, 1], gap="small")
+            with view_col:
                 if st.button(
-                    "Replay",
-                    type="primary",
-                    key="replay_start",
-                    shortcut=SHORTCUTS["replay"],
-                    help="Re-executes the recorded plan in the simulator. No "
-                         f"model is called. Shortcut: {SHORTCUTS['replay']}.",
+                    "VIEW RUN",
+                    key="history_view",
+                    help="Show this run's recorded metadata and what a replay "
+                         "reproduces from it. No model is called.",
                 ):
-                    timeline = replay_panel.timeline(picked["record"], plan)
-                    if timeline is None:
-                        st.warning(
-                            "This record has no runnable plan to replay."
-                        )
-                    else:
-                        st.session_state.log_replay = {
-                            "run": picked,
-                            "plan": plan,
-                            "timeline": timeline,
-                        }
-                        st.session_state.log_replay_autoplay = True
-                        st.rerun()
-            else:
-                st.button(
-                    "Replay",
-                    key="replay_start",
-                    type="primary",
-                    disabled=True,
-                    help="This record cannot be replayed; the reason is below.",
+                    st.session_state.history_view_run = picked["id"]
+                    st.session_state.pop("log_replay", None)
+                    st.rerun()
+            with replay_col:
+                if picked["replayable"]:
+                    if st.button(
+                        "REPLAY",
+                        type="primary",
+                        key="replay_start",
+                        shortcut=SHORTCUTS["replay"],
+                        help="Re-executes the recorded plan in the simulator. No "
+                             f"model is called. Shortcut: {SHORTCUTS['replay']}.",
+                    ):
+                        timeline = replay_panel.timeline(picked["record"], plan)
+                        if timeline is None:
+                            st.warning(
+                                "This record has no runnable plan to replay."
+                            )
+                        else:
+                            st.session_state.log_replay = {
+                                "run": picked,
+                                "plan": plan,
+                                "timeline": timeline,
+                            }
+                            st.session_state.log_replay_autoplay = True
+                            st.session_state.history_view_run = picked["id"]
+                            st.rerun()
+                else:
+                    st.button(
+                        "REPLAY",
+                        key="replay_start",
+                        type="primary",
+                        disabled=True,
+                        help="This record cannot be replayed; the reason is below.",
+                    )
+                    st.caption(f"Not replayable — {picked['reason']}.")
+
+        # ── VIEW RUN: the record itself ───────────────────────────────────
+        viewed = next(
+            (item for item in log_runs
+             if item["id"] == st.session_state.get("history_view_run")),
+            None,
+        )
+        if viewed is not None and st.session_state.get("log_replay") is None:
+            st.markdown(DS.divider(), unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='display:flex;align-items:center;"
+                f"gap:{S.px(S.SM)};margin-bottom:{S.px(S.SM)}'>"
+                f"{replay_panel.provenance_html(viewed)}"
+                f"<span style='font-family:{T.FONT_MONO};"
+                f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY}'>"
+                f"{viewed['label']} · {_e(viewed['when'])} · run "
+                f"{viewed['run_id'] or 'without a recorded id'}</span></div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                DS.section_title("Structured metadata"), unsafe_allow_html=True
+            )
+            st.markdown(
+                replay_panel.metadata_html(viewed), unsafe_allow_html=True
+            )
+            st.markdown(
+                DS.section_title("Timeline"), unsafe_allow_html=True
+            )
+            st.markdown(
+                replay_panel.timeline_html(viewed, None), unsafe_allow_html=True
+            )
+            st.markdown(
+                DS.section_title("What a replay reproduces"), unsafe_allow_html=True
+            )
+            if viewed["replayable"]:
+                viewed_plan = next(
+                    (option for option in viewed["plans"]
+                     if option["ok"] is True), viewed["plans"][0]
+                ) if viewed["plans"] else None
+                st.markdown(
+                    replay_panel.reproduction_html(
+                        replay_panel.reproduce(viewed["record"], viewed_plan)
+                    ),
+                    unsafe_allow_html=True,
                 )
-                st.caption(f"Not replayable — {picked['reason']}.")
+                st.caption(
+                    "Reproduced by the simulator and the verifier alone — "
+                    "simulator.step and verify_plan. No model was called."
+                )
+            else:
+                st.caption(f"Not replayable — {viewed['reason']}.")
 
         shown = st.session_state.log_replay
         if shown:
             st.markdown(DS.divider(), unsafe_allow_html=True)
+            # Provenance first: a replay of a scripted run must never be read as
+            # the replay of a live one.
+            st.markdown(
+                f"<div style='display:flex;align-items:center;"
+                f"gap:{S.px(S.SM)};margin-bottom:{S.px(S.SM)}'>"
+                f"{replay_panel.provenance_html(shown['run'])}"
+                f"<span style='font-family:{T.FONT_MONO};"
+                f"font-size:{T.SIZE_SM}px;color:{C.TEXT_SECONDARY}'>"
+                f"{replay_panel.PROVENANCE['recorded']} · replayed from "
+                f"{_e(str(LOG_PATH.relative_to(ROOT)))} — the log, not a live "
+                f"run</span></div>",
+                unsafe_allow_html=True,
+            )
             st.markdown(
                 replay_panel.meta_html(shown["run"], shown["plan"]),
                 unsafe_allow_html=True,
             )
             st.markdown(
                 replay_panel.facts_html(replay_panel.facts_rows(shown["run"])),
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                DS.section_title("Structured metadata"), unsafe_allow_html=True
+            )
+            st.markdown(
+                replay_panel.metadata_html(shown["run"]), unsafe_allow_html=True
+            )
+            st.markdown(
+                DS.section_title("What the replay reproduced"),
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                replay_panel.reproduction_html(
+                    replay_panel.reproduce(shown["run"]["record"], shown["plan"])
+                ),
                 unsafe_allow_html=True,
             )
 

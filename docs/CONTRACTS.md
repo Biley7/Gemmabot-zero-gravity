@@ -151,12 +151,20 @@ programmatic API is a known gap.
 
 ```json
 {
-  "timestamp": "2026-10-09T00:00:00+00:00",
+  "run_id": "9db46821da4c",
+  "timestamp": "2026-10-12T03:43:02.551471+00:00",
+  "input_type": "text",
   "instruction": "Move to the goal",
+  "model": "gemma-4-26b-a4b-it",
   "backend": "dry",
   "success": true,
   "attempts": 2,
+  "plan_length": 6,
+  "verification": { "ok": true, "reason": "ok" },
+  "execution": { "ran": true, "halted": null, "steps": 6 },
   "latency": 0.0001,
+  "final_position": [6, 5],
+  "goal_reached": true,
   "actions": [ "…the verified plan…" ],
   "world": { "…the world it ran on…" },
   "mode": "synthetic",
@@ -164,10 +172,33 @@ programmatic API is a known gap.
 }
 ```
 
-`mode` is `"live"` (a model answered), `"synthetic"` (a scripted planner did),
-or `null` (provenance not recorded). `actions` and `world` are what make a
-record replayable; legacy records without them are listed but cannot be
-replayed.
+The first twelve fields are the structured metadata the Run History shows, one
+row each: identity (`run_id`), when (`timestamp`), how it was asked
+(`input_type`, `instruction`, `model`, `backend`), what it planned (`attempts`,
+`plan_length`) and what came of it (`verification`, `execution`, `latency`,
+`final_position`, `goal_reached`).
+
+- Every optional field is written as `null` rather than omitted, and a reader
+  must show `null` as **not recorded** — never as a guess. Records written
+  before a field existed simply lack the key, which means the same thing.
+- `verification` and `execution` are the **run's own** verdict and outcome, as
+  measured when it ran: `execution.ran: false` is a fact ("this run did not
+  drive the robot"), not a blank. `final_position` and `goal_reached` are only
+  written when the robot really moved.
+- `mode` is `"live"` (a model answered), `"synthetic"` (a scripted planner
+  did), or `null` (provenance not recorded). Only the caller knows which and
+  only these two values are stored; anything else is `null`.
+- `actions` and `world` are what make a record replayable; legacy records
+  without them are listed but cannot be replayed. A replay re-runs the recorded
+  plan on the recorded world through `simulator.step` and `verify_plan` alone —
+  no model is called — and is reported beside what the record says, per field,
+  as *match* / *mismatch* / *unrecorded*.
+
+The Run History labels each record **LIVE RUN** (a real model call this session
+made), **RECORDED RUN** (read back from the log) or **SYNTHETIC BENCHMARK** (a
+scripted planner answered; never a live measurement, whatever its numbers say).
+No run is ever fabricated: the table, the metadata and every replay read this
+file and nothing else.
 
 ## Compatibility shims
 

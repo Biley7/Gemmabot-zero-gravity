@@ -17,12 +17,37 @@ summarize_run(record) -> str
 
 Record schema
 -------------
-timestamp, instruction, backend, success, attempts, latency, actions, world,
-mode, history.  ``actions`` is the validated plan and ``world`` the world it was
-verified and executed against — together they let a run be replayed by the
-simulator alone, with no model call.  ``world`` is ``None`` when the caller did
-not supply one, and both keys are absent from records written before they were
-added: a reader must treat missing as "not captured", never as a guess.
+One record is one run, and every field a reader shows is written here:
+
+    run_id          stable id for this run (12 hex characters, unique)
+    timestamp       UTC ISO-8601, when the run finished
+    input_type      "text" / "vision" / "benchmark" — how the run was asked
+    instruction     the plain-English instruction, or "" when there was none
+    model           the model id the backend would use, or None
+    backend         the backend that was selected, e.g. "api", "ollama", "dry"
+    mode            "live" when a model really replied, "synthetic" when a
+                    scripted reader did, None when the caller did not say
+    success         the plan was accepted
+    attempts        how many attempts the run made
+    plan_length     actions in the plan this run is about (see below)
+    verification    {"ok", "reason"} — the verifier's verdict on that plan
+    execution       {"ran", "halted", "steps"} — what the simulator did with it
+    latency         wall-clock seconds, or None when not measured
+    final_position  where the robot ended up, as [x, y]
+    goal_reached    whether it ended on the goal
+    actions         the accepted plan, for replay
+    world           the world it was verified against, for replay
+    history         one entry per attempt, including the prompt the retry used
+
+``actions`` and ``world`` together are what let a run be replayed by the
+simulator alone, with no model call.  ``plan_length`` is the accepted plan's
+length when there is one, and otherwise the length of the last plan the run
+parsed — the plan the run is *about*; ``record["actions"]`` says which of the
+two it was, so a reader never has to guess.
+
+Every optional field is written as ``None`` rather than omitted, and a reader
+must show ``None`` as *not recorded* — never as a guess.  Records written before
+a field existed simply lack that key, which means the same thing.
 
 ``mode`` records whether the run really called a model — ``"live"`` — or was
 answered by a scripted reader — ``"synthetic"``.  Only the caller knows which,
@@ -35,13 +60,16 @@ ones instead of quietly mixing them.
 Security
 --------
 Any string that matches the value of the GEMINI_API_KEY env-var is
-automatically redacted before it reaches disk or the summary string.
+automatically redacted before it reaches disk or the summary string, at any
+depth of the record.  No credential is ever stored: the fields above are the
+whole schema, and nothing else the caller passes is written.
 """
 from __future__ import annotations
 
 import copy
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -91,6 +119,77 @@ def _scrub(obj: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Field sanitisers — every recorded value is checked, never coerced
+# ---------------------------------------------------------------------------
+
+# The input kinds a run can have.  Anything else is stored as None rather than
+# rounded to the nearest one.
+INPUT_TYPES: tuple[str, ...] = ("text", "vision", "benchmark")
+
+
+def _plan_length(actions: Any, history: Any) -> int | None:
+    """The plan this run is about: the accepted one, else the last parsed one.
+
+    ``None`` when no plan was ever parsed — which is a different statement from
+    a plan of length zero, and is reported as *no plan recorded*.
+    """
+    if isinstance(actions, list):
+        return len(actions)
+    for attempt in reversed(history if isinstance(history, list) else []):
+        plan = attempt.get("actions") if isinstance(attempt, dict) else None
+        if isinstance(plan, list):
+            return len(plan)
+    return None
+
+
+def _verification(value: Any) -> dict | None:
+    """``{"ok", "reason"}`` from the verifier's verdict, or ``None``."""
+    if not isinstance(value, dict):
+        return None
+    ok = value.get("ok")
+    reason = value.get("reason")
+    return {
+        "ok": ok if ok is True or ok is False else None,
+        "reason": str(reason)[:500] if reason is not None else "",
+    }
+
+
+def _execution(value: Any) -> dict | None:
+    """``{"ran", "halted", "steps"}`` from the execution, or ``None``."""
+    if not isinstance(value, dict):
+        return None
+    ran = value.get("ran")
+    halted = value.get("halted")
+    steps = value.get("steps")
+    try:
+        steps_value: int | None = int(steps)
+    except (TypeError, ValueError):
+        steps_value = None
+    return {
+        "ran": ran if ran is True or ran is False else None,
+        "halted": str(halted)[:120] if halted else None,
+        "steps": steps_value,
+    }
+
+
+def _cell(value: Any) -> list[int] | None:
+    """``[x, y]`` when the caller really has a cell, else ``None``."""
+    if (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+    ):
+        return [int(value[0]), int(value[1])]
+    return None
+
+
+def _text(value: Any) -> str | None:
+    """A trimmed non-empty string, or ``None`` — never ``""`` or ``"None"``."""
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+# ---------------------------------------------------------------------------
 # log_run
 # ---------------------------------------------------------------------------
 
@@ -104,6 +203,14 @@ def log_run(
     path: str = "logs/runs.jsonl",
     world: dict | None = None,
     mode: str | None = None,
+    *,
+    input_type: str | None = None,
+    model: str | None = None,
+    verification: dict | None = None,
+    execution: dict | None = None,
+    final_position: list[int] | None = None,
+    goal_reached: bool | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """Build and persist one run record.
 
@@ -134,6 +241,24 @@ def log_run(
         when a scripted reader did.  Stored only if it is one of those two —
         anything else (including ``None``) is stored as ``None`` so a reader
         can report the run's provenance as unrecorded instead of guessing.
+    input_type:
+        ``"text"``, ``"vision"`` or ``"benchmark"`` — how the run was asked.
+        A value outside those three is stored as ``None`` (not recorded).
+    model:
+        The model id the run would call, or ``None`` when none applies.
+    verification:
+        The verifier's verdict on the plan, ``{"ok", "reason"}``.  Recorded as
+        given so a replay can be compared against it.
+    execution:
+        What the simulator did with the plan, ``{"ran", "halted", "steps"}``.
+    final_position:
+        Where the robot ended up, ``[x, y]``.
+    goal_reached:
+        Whether it ended on the goal.
+    run_id:
+        A caller-supplied id (useful for a test or a reproduce step).  A random
+        12-character id is generated when this is not a usable string, so every
+        record has one and no two share it.
 
     Returns
     -------
@@ -141,12 +266,23 @@ def log_run(
         The record that was written (or built, if the write failed).
     """
     record: dict = {
+        # Identity first: a run is looked up by this, not by its line number.
+        "run_id": _text(run_id) or uuid.uuid4().hex[:12],
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "input_type": input_type if input_type in INPUT_TYPES else None,
         "instruction": instruction,
+        "model": _text(model),
         "backend": backend,
         "success": actions is not None,
         "attempts": attempts,
+        # The plan this run is about, and what the run's own verifier and the
+        # simulator said about it at the time.
+        "plan_length": _plan_length(actions, history),
+        "verification": _verification(verification),
+        "execution": _execution(execution),
         "latency": latency,
+        "final_position": _cell(final_position),
+        "goal_reached": goal_reached if isinstance(goal_reached, bool) else None,
         # The plan and the world it ran on: a replay needs both, and neither can
         # be reconstructed from the replies afterwards.
         "actions": copy.deepcopy(actions) if isinstance(actions, list) else None,

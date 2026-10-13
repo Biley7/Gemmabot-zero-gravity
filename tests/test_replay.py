@@ -501,3 +501,265 @@ def test_a_halted_replay_still_renders_its_own_step(no_model):
     assert "data-step='1'" in html
     assert "blocked at [2, 0]" in html
     assert "gb-step-dot err" in html          # the halted action is marked
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — the run's own metadata, its provenance, and the filters over it
+# ---------------------------------------------------------------------------
+
+def _full_record(**overrides):
+    """A record written by a run that measured everything it could."""
+    record = _record(
+        run_id="a1b2c3d4e5f6",
+        input_type="text",
+        model="gemma-3-27b-it",
+        mode="live",
+        plan_length=len(SAFE_PLAN),
+        verification={"ok": True, "reason": "ok"},
+        execution={"ran": True, "halted": None, "steps": len(SAFE_PLAN)},
+        final_position=[6, 5],
+        goal_reached=True,
+    )
+    record.update(overrides)
+    return record
+
+
+def test_the_metadata_is_the_twelve_fields_a_run_carries():
+    model = replay.run(_full_record(), 1)
+    rows = replay.metadata_rows(model)
+
+    assert [row["id"] for row in rows] == [
+        "run_id", "timestamp", "input_type", "model", "backend", "attempts",
+        "plan_length", "verification", "execution", "latency", "final_position",
+        "goal_reached",
+    ]
+    values = {row["id"]: row["value"] for row in rows}
+    assert values["run_id"] == "a1b2c3d4e5f6"
+    assert values["timestamp"] == "2026-10-06 19:15:20 UTC"
+    assert values["input_type"] == "Text"
+    assert values["model"] == "gemma-3-27b-it"
+    assert values["attempts"] == "2"
+    assert values["plan_length"] == "6 actions"
+    assert values["verification"] == "✓ verified"
+    assert values["execution"] == "executed"
+    assert values["final_position"] == "[6, 5]"
+    assert values["goal_reached"] == "✓ yes"
+    # Every field is in the grid the panel draws, addressed by its own id.
+    html = replay.metadata_html(model)
+    for field in ("run_id", "input_type", "execution", "goal_reached"):
+        assert f"data-field='{field}'" in html
+
+
+def test_a_record_from_before_these_fields_existed_records_nothing():
+    """A legacy record is shown, not back-filled: every blank says so."""
+    legacy = {
+        "timestamp": "2026-10-04T10:00:00+00:00", "instruction": "an older run",
+        "backend": "api", "success": True, "attempts": 1, "latency": 2.41,
+        "history": [{"attempt": 1, "prompt": "p", "reply": "r", "ok": True,
+                     "feedback": "ok"}],
+    }
+    model = replay.run(legacy, 1)
+    blanks = {
+        "run_id", "input_type", "model", "plan_length", "verification",
+        "execution", "final_position", "goal_reached",
+    }
+    for row in replay.metadata_rows(model):
+        if row["id"] in blanks:
+            assert row["value"] == replay._ABSENT, row["id"]
+            assert row["state"] == "neutral", row["id"]
+    # What the record does hold is still shown, from the record alone.
+    values = {row["id"]: row["value"] for row in replay.metadata_rows(model)}
+    assert values["backend"] == "API (Gemini)"
+    assert values["latency"] == "2.41 s"
+    assert values["attempts"] == "1"
+
+
+def test_a_run_that_never_executed_says_so_instead_of_looking_blank():
+    """``ran: False`` is a fact the run recorded, not a missing field."""
+    record = _full_record(
+        execution={"ran": False, "halted": None, "steps": None},
+        final_position=None, goal_reached=None,
+    )
+    rows = {row["id"]: row for row in replay.metadata_rows(replay.run(record, 1))}
+
+    assert rows["execution"]["value"] == "not executed"
+    assert rows["execution"]["detail"] == "the run recorded no execution"
+    assert rows["execution"]["state"] == "error"
+    # Nothing about the walk was measured, so the other two say so.
+    assert rows["final_position"]["value"] == replay._ABSENT
+    assert rows["goal_reached"]["value"] == replay._ABSENT
+
+
+def test_provenance_is_read_from_the_record_and_never_guessed():
+    """Live, recorded and synthetic are three different claims."""
+    live = _full_record(mode="live")
+    assert replay.provenance(live, session_run_id="a1b2c3d4e5f6") == {
+        "key": "live", "label": "LIVE RUN", "state": "success",
+        "detail": "a real model call, made in this session",
+        "mode": "live", "in_session": True,
+    }
+
+    # The same record read back later is recorded, not live.
+    read_back = replay.provenance(live)
+    assert read_back["key"] == "recorded"
+    assert read_back["label"] == "RECORDED RUN"
+    assert read_back["in_session"] is False
+
+    # A scripted run is synthetic even inside the session that made it.
+    scripted = _full_record(mode="synthetic")
+    assert replay.provenance(
+        scripted, session_run_id="a1b2c3d4e5f6"
+    )["label"] == "SYNTHETIC BENCHMARK"
+
+    # No mode, or one this build does not know: neither claim is made, even for
+    # a run this session really made.
+    for mode in (None, "guess"):
+        info = replay.provenance(_full_record(mode=mode),
+                                 session_run_id="a1b2c3d4e5f6")
+        assert info["key"] == "recorded"
+        assert "provenance was not recorded" in info["detail"]
+        assert info["in_session"] is True
+    # An unknown mode is dropped by the display model, not shown as one.
+    assert replay.run(_full_record(mode="guess"), 1)["provenance"]["mode"] is None
+
+
+def test_the_history_table_marks_the_run_this_session_made():
+    records = [_record(), _full_record()]
+    models = replay.runs(records, session_run_id="a1b2c3d4e5f6")
+    newest, oldest = models
+
+    assert newest["provenance"]["key"] == "live"
+    assert oldest["provenance"]["key"] == "recorded"
+    html = replay.runs_html(models)
+    assert "data-provenance='live'" in html
+    assert "data-run-id='a1b2c3d4e5f6'" in html
+    assert "data-input='text'" in html
+
+
+@pytest.mark.parametrize("selection,expected", [
+    ({"statuses": ("success",)}, True),
+    ({"statuses": ("failed",)}, False),
+    ({"statuses": ("repaired",)}, True),          # it failed once, then passed
+    ({"statuses": ("success", "repaired")}, True),  # OR inside a group
+    ({"inputs": ("text",)}, True),
+    ({"inputs": ("vision",)}, False),
+    ({"inputs": ("vision", "text")}, True),
+    ({"statuses": ("failed",), "inputs": ("text",)}, False),  # AND across groups
+    ({"statuses": ("repaired",), "inputs": ("text",)}, True),
+])
+def test_the_filters_group_the_way_the_ui_says_they_do(selection, expected):
+    model = replay.run(_full_record(), 1)
+    assert replay.matches(model, **selection) is expected
+
+
+def test_a_run_that_recorded_no_input_type_matches_neither_input():
+    """Not recorded is not evidence of Text — the old records stay out."""
+    model = replay.run(_record(), 1)
+    assert model["input_type"] is None
+    assert replay.matches(model, inputs=("text",)) is False
+    assert replay.matches(model, inputs=("vision",)) is False
+    # With no input constraint it is still a run like any other.
+    assert replay.matches(model) is True
+
+
+def test_the_model_filter_selects_on_the_label_it_shows():
+    model = replay.run(_full_record(), 1)
+    key = replay.model_key(model)
+    assert key == "Scripted (dry mode) · gemma-3-27b-it"
+    assert replay.matches(model, models=(key,)) is True
+    assert replay.matches(model, models=("API (Gemini) · gemma-3",)) is False
+
+    # No model recorded is its own label, never an empty one.
+    silent = replay.run(_record(), 1)
+    assert replay.model_key(silent) == "Scripted (dry mode) · no model recorded"
+    assert replay.matches(silent, models=(replay.model_key(silent),)) is True
+
+
+def test_a_replay_confirms_every_result_the_run_recorded(no_model):
+    record = _full_record()
+    repro = replay.reproduce(record, replay.plans(record)[1])
+
+    assert [row["id"] for row in repro["agreement"]] == [
+        "verification", "execution_steps", "execution_halted",
+        "final_position", "goal_reached",
+    ]
+    assert all(row["state"] == "match" for row in repro["agreement"])
+    assert repro["mismatches"] == [] and repro["unrecorded"] == []
+    # And the timeline it produced is the simulator's own.
+    assert [step["message"] for step in repro["timeline"]["steps"]] == [
+        "turned right", "moved forward 7", "turned left", "moved forward 6",
+        "turned left", "moved forward 2",
+    ]
+
+    html = replay.reproduction_html(repro)
+    assert html.count("data-state='match'") == 5
+    assert "data-agrees='true'" in html
+
+
+def test_a_replay_that_disagrees_with_the_log_says_which_field(no_model):
+    """A mismatch is a finding: the log and the code really disagree."""
+    record = _full_record(
+        execution={"ran": True, "halted": None, "steps": 3},
+        final_position=[0, 0], goal_reached=False,
+    )
+    repro = replay.reproduce(record, replay.plans(record)[1])
+
+    assert [row["label"] for row in repro["mismatches"]] == [
+        "Steps applied", "Final position", "Goal reached",
+    ]
+    assert {row["id"]: row["state"] for row in repro["agreement"]} == {
+        "verification": "match", "execution_steps": "mismatch",
+        "execution_halted": "match", "final_position": "mismatch",
+        "goal_reached": "mismatch",
+    }
+    html = replay.reproduction_html(repro)
+    assert "data-agrees='false'" in html
+    assert "data-field='goal_reached' data-state='mismatch'" in html
+
+
+def test_a_run_that_never_ran_is_not_reported_as_a_disagreement(no_model):
+    """The replay does not contradict a walk the run never made."""
+    record = _full_record(
+        execution={"ran": False, "halted": None, "steps": None},
+        final_position=None, goal_reached=None,
+    )
+    repro = replay.reproduce(record, replay.plans(record)[1])
+
+    states = {row["id"]: row["state"] for row in repro["agreement"]}
+    assert states["execution_steps"] == "unrecorded"
+    assert states["final_position"] == "unrecorded"
+    assert states["goal_reached"] == "unrecorded"
+    assert states["verification"] == "match"      # this much was measured
+    assert repro["mismatches"] == []
+    # The blank says which run never executed, and the replay still shows what
+    # the plan does: six steps onto the goal.
+    recorded = {row["id"]: row for row in repro["agreement"]}
+    assert recorded["execution_steps"]["recorded"] == "not executed"
+    assert recorded["execution_steps"]["reproduced"] == "6"
+    assert repro["goal_reached"] is True
+    assert "data-agrees='true'" in replay.reproduction_html(repro)
+
+
+def test_a_replay_of_a_record_with_no_world_reproduces_nothing(no_model):
+    legacy = {"timestamp": "2026-10-04T10:00:00+00:00", "instruction": "old",
+              "backend": "api", "success": True, "attempts": 1,
+              "history": [{"attempt": 1, "prompt": "p", "reply": "r", "ok": True,
+                           "feedback": "ok", "actions": copy.deepcopy(SAFE_PLAN)}]}
+    assert replay.reproduce(legacy, replay.plans(legacy)[0]) is None
+    assert "Nothing to reproduce" in replay.reproduction_html(None)
+
+
+def test_a_hostile_record_cannot_inject_markup_into_the_metadata():
+    record = _full_record(
+        instruction="<img src=x onerror=alert(1)>",
+        verification={"ok": False, "reason": "<script>bad()</script>"},
+        model="<b>model</b>",
+    )
+    model = replay.run(record, 1)
+    html = replay.metadata_html(model) + replay.provenance_html(model)
+
+    assert "<img" not in html
+    assert "<script>" not in html
+    assert "<b>model</b>" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;b&gt;model&lt;/b&gt;" in html

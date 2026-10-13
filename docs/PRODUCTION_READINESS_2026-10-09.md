@@ -309,3 +309,39 @@ structure, not the verdict:
 * Not "secure deployment" — no auth, no metering.
 * Not "benchmarks prove performance" — the stored artifact is synthetic
   (`mode=synthetic`, `backend=dry`, 0.000 s), and its own header says so.
+
+## 19. Phase 6 — Run History + Replay (2026-10-13)
+
+Blocker **8 (no run IDs, no log schema)** is closed, and the Replay lab is now a
+Run History over a documented record:
+
+* **`logs/runs.jsonl` records are schema'd.** Each line carries the twelve
+  structured metadata fields — `run_id`, `timestamp`, `input_type`,
+  `instruction`, `model`, `backend`, `attempts`, `plan_length`, `verification`,
+  `execution`, `latency`, `final_position`, `goal_reached` — plus the `actions`
+  and `world` a replay needs and the `mode`/`history` provenance. Documented in
+  `docs/CONTRACTS.md`; each logged run gets its own `run_id` (a caller may
+  supply one), and `app.py` remembers the id of the run the session just made so
+  the history can label exactly that record a **LIVE RUN**.
+* **Missing is stated, never guessed.** A field that was not recorded is `null`
+  and renders as *not recorded*; a record written before the field existed omits
+  the key, which means the same. Secrets are redacted before the write (unchanged
+  `_redact_record`).
+* **Filters**: Success, Failed, Repaired, Vision, Text and Model/backend — a
+  record whose input type was never captured matches neither Vision nor Text, and
+  the UI says so.
+* **VIEW RUN** opens any record's metadata and timeline; **REPLAY** feeds the
+  recorded plan and world back through `player.build_timeline` (`simulator.step`)
+  and `verify_plan` alone — **no model is called** — and reports each reproduced
+  fact (world, movement, actions, verification, execution, timeline) beside what
+  the record says as *match* / *mismatch* / *unrecorded*. The player offers PLAY,
+  PAUSE, STEP and RESET, and every replay is clearly a recording of a past run,
+  not a new one.
+* **Provenance is enforced in the UI**: every record is labelled **LIVE RUN**
+  (a model call this session made), **RECORDED RUN** (read back from the log) or
+  **SYNTHETIC BENCHMARK** (a scripted planner replied). Nothing is fabricated —
+  the table, the metadata and every replay read the log file and nothing else.
+
+**Still open:** blockers 1, 2, 3, 5 and the unauthenticated deployment surface are
+unchanged, and D4 (replay of *model replies*, distinct from this plan replay) is
+still not implemented.

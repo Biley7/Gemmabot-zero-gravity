@@ -69,10 +69,39 @@ app.py  (Streamlit entry point, session state, five labs)
   │      └─ backend.vision.map_vision.read_map → check_world_report (3 checks)
   │    GATE: a world must pass every check before "Load into simulator"
   │
-  └─ Replay / Benchmark
-       backend.logger.logger.load_runs(logs/runs.jsonl) → player / benchmark panel
-       (replays run through engine.simulate — demonstrations, marked unverified)
+  ├─ Run History
+  │    backend.logger.logger.load_runs(logs/runs.jsonl)
+  │      └─ frontend.panels.replay  filter → VIEW RUN → REPLAY
+  │    Filters: Success · Failed · Repaired · Vision · Text · Model/backend
+  │    VIEW RUN   the record's twelve metadata fields + its timeline
+  │    REPLAY      player.build_timeline(record['world'], record['actions'])
+  │                 → simulator.step + verify_plan alone — NO model is called
+  │    Each record is labelled LIVE RUN / RECORDED RUN / SYNTHETIC BENCHMARK
+  │
+  └─ Benchmark
+       benchmark sources measured separately (scripted replies = SYNTHETIC)
 ```
+
+### The run record
+
+Every logged run is a JSONL line holding the twelve structured metadata fields
+the Run History shows — `run_id`, `timestamp`, `input_type`, `instruction`,
+`model`, `backend`, `attempts`, `plan_length`, `verification`, `execution`,
+`latency`, `final_position`, `goal_reached` — plus the `actions` and `world` a
+replay needs, and the `mode`/`history` provenance. A field that was not
+recorded is written `null` and shown as *not recorded*; a record written before
+a field existed omits the key, which means the same thing. Secrets are redacted
+before the write, and no run is ever fabricated: the table, the metadata and
+every replay read this file and nothing else.
+
+A replay is deterministic simulation, not a re-run: it feeds the recorded world
+and plan back into `player.build_timeline` (which calls `simulator.step`) and
+`verify_plan`. The reproduced timeline *is* the world, the robot movement and the
+actions; the recorded results — verification, steps applied, halt, final position,
+goal reached — are then compared field by field against what the record says and
+reported as *match* / *mismatch* / *unrecorded*, so a log that disagrees with the
+current code is a visible finding rather than a silent pass. The player offers
+PLAY, PAUSE, STEP and RESET.
 
 `frontend/panels/engine.py` is the UI-facing adapter over the guard; it is
 deliberately Streamlit-free and unit-testable, and it selects backends without
@@ -92,7 +121,7 @@ owning any validation logic.
 | `backend/planner/planner.py` | `ask_api` (Gemini), `ask_ollama` transports |
 | `backend/verifier/harness.py` | `verify_plan`, `dry_run`, `plan_with_repair` |
 | `backend/vision/map_vision.py` | `read_map`, `check_world_report`, `ask_vision_api`, `ask_vision_ollama` |
-| `backend/logger/logger.py` | `log_run`, `load_runs`, `summarize_run`, secret redaction |
+| `backend/logger/logger.py` | `log_run` (the twelve-field run record + `actions`/`world`/`mode`), `load_runs`, `summarize_run`, secret redaction |
 | `gemmabot/simulator.py` | 8×8 world, `step`, `render`, `reached_goal` (physics source of truth) |
 | `gemmabot/{config,prompts,benchmark}.py` | configuration, prompts, benchmark CLI |
 | `gemmabot/{planner,harness,logger,map_vision}.py`, root `engine.py`, `ui_helpers.py` | 3–9 line compatibility shims that re-export the real modules |
