@@ -102,10 +102,6 @@ SHORTCUTS: dict[str, str] = {
 LOG_LINE_CAP = 200
 BENCHMARK_JSON = ROOT / "benchmarks" / "results.json"
 # The aggregate results the runner writes: what was measured, on which dataset,
-# with how many runs and for what sample.  Shown verbatim, because it is the
-# artifact a reader would audit.
-BENCHMARK_REPORT_MD = ROOT / "benchmarks" / "report.md"
-# The aggregate results the runner writes: what was measured, on which dataset,
 # with how many runs and what sample-size verdict.  Shown verbatim, because it is
 # the artifact a reader would audit.
 BENCHMARK_REPORT_MD = ROOT / "benchmarks" / "report.md"
@@ -132,7 +128,13 @@ except ImportError:  # pragma: no cover - depends on environment
 
 load_dotenv()
 
-st.set_page_config(page_title="GemmaBot", page_icon="🤖", layout="wide")
+# The tab icon is an industrial mark, not a mascot: precision manufacturing,
+# not a robot emoji.
+st.set_page_config(
+    page_title="GemmaBot",
+    page_icon=":material/precision_manufacturing:",
+    layout="wide",
+)
 inject_theme()
 
 MAP_LABELS = {
@@ -425,6 +427,7 @@ def _guard_meta(*, backend: str, model: str | None, max_tries: int) -> dict:
     return brain.brain_metadata(
         backend=engine.backend_label(backend),
         model=model,
+        planner=backend,
         status="ready",
         attempts=0,
         max_tries=max_tries,
@@ -524,6 +527,7 @@ def _run_brain_meta(
     return brain.run_metadata(
         backend_label=engine.backend_label(backend),
         model=engine.backend_model(backend),
+        planner=backend,
         verification=verification,
         actions=actions,
         attempts=attempts,
@@ -789,6 +793,7 @@ with tabs["Mission"]:
                     brain.brain_metadata(
                         backend=engine.backend_label(backend),
                         model=engine.backend_model(backend),
+                        planner=backend,
                         status=status_key,
                         attempts=live["attempt"],
                         max_tries=max_tries,

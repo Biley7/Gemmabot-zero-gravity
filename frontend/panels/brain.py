@@ -35,6 +35,7 @@ brain_metadata(...)        -> dict   display model for one run
 run_metadata(...)          -> dict   the same, from a finished loop run
 brain_panel_html(meta)     -> str    the GemmaBot Guard interface
 model_family(model_id)     -> str    "gemma-4-26b-a4b-it" -> "Gemma 4"
+model_display(...)         -> str    the MODEL row: planner-aware, model-agnostic
 attempt_status(record, n)  -> tuple  the loop state one attempt record moves to
 """
 from __future__ import annotations
@@ -134,6 +135,45 @@ def model_family(model_id: str | None) -> str:
     if "gemma" in lowered:
         return "Gemma"
     return name
+
+
+# The MODEL row is about the *planner*, not a vendor: the architecture is
+# model-agnostic, so the row reads "Gemma 4" for the flagship, "Local Model"
+# for the local Ollama transport and "Custom Planner" for a planner that is
+# neither — a mock, a recorded replay, or a name a deployment registered.
+LOCAL_PLANNERS = ("ollama", "local")
+
+
+def model_display(model_id: str | None, planner: str | None = None) -> str:
+    """The MODEL row, planner-aware — no product logic is keyed to Gemma here.
+
+    Rules, in order:
+    * a Gemma id (flagship) reads as its family — ``"Gemma 4"`` — whichever
+      transport served it;
+    * a named model id the planner itself declares reads verbatim (an OpenAI-
+      compatible endpoint serving ``llama3.2`` says ``llama3.2``), except a
+      local transport, which reads ``"Local Model"``;
+    * no model id: a local transport reads ``"Local Model"``, any other known
+      planner (mock, recorded, scripted, supplied, a registered name) reads
+      ``"Custom Planner"``, and nothing known reads ``"—"``.
+    """
+    if model_id:
+        name = str(model_id).strip()
+        family = model_family(name)
+        if family != name:  # a known family resolved from the id
+            return family
+        if (planner or "").strip().lower() in LOCAL_PLANNERS:
+            return "Local Model"
+        return name
+    key = (planner or "").strip().lower()
+    if key in LOCAL_PLANNERS:
+        return "Local Model"
+    if key and key not in ("api", "auto", "—"):
+        # api is the flagship endpoint; an unresolved auto has nothing to
+        # claim yet.  Every other name — mock, recorded, scripted, supplied,
+        # a registered adapter — is a planner that is not a named model.
+        return "Custom Planner"
+    return "—"
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +365,7 @@ def brain_metadata(
     error: str | None = None,
     refusal: dict | None = None,
     detail: str | None = None,
+    planner: str | None = None,
 ) -> dict:
     """Display model for the Guard console — one run's structured metadata.
 
@@ -334,6 +375,12 @@ def brain_metadata(
         Display name of the backend that answered, e.g. ``"API (Gemini)"``.
     model:
         The model id configured for that backend (``None`` when unresolved).
+    planner:
+        The backend label the run was asked under (``"api"``, ``"ollama"``,
+        ``"mock"``, a registered name).  Only the MODEL row's honest title
+        reads it — a planner that is not a named model endpoint displays
+        ``"Custom Planner"`` rather than pretending to be one.  Optional:
+        without it the row degrades to the id-derived family.
     status:
         ``"thinking"``, ``"repairing"`` or ``"executing"``; anything else falls
         back to ``"thinking"``.
@@ -365,7 +412,7 @@ def brain_metadata(
 
     return {
         "model": {
-            "family": model_family(model),
+            "family": model_display(model, planner),
             "id": str(model) if model else None,
         },
         "backend": {"label": backend or "—"},
@@ -429,6 +476,7 @@ def run_metadata(
     approved: bool | None = None,
     error: str | None = None,
     refusal: dict | None = None,
+    planner: str | None = None,
 ) -> dict:
     """Guard metadata for a finished run: the verified plan and its checks.
 
@@ -460,6 +508,7 @@ def run_metadata(
         approved=approved,
         error=error,
         refusal=refusal,
+        planner=planner,
     )
 
 

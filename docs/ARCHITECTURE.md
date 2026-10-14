@@ -39,7 +39,7 @@ re-computes the approval digest before a single simulator step runs.
 
 | Layer | Module | Responsibility |
 |---|---|---|
-| Planner adapters | `backend/guard/planner.py` | model-agnostic `Planner`/`VisionPlanner` protocols; Gemini, Ollama, fallback and callable adapters; registry |
+| Planner adapters | `backend/guard/planner.py` | model-agnostic `Planner`/`VisionPlanner` protocols; Gemini, Ollama, OpenAI-compatible, mock, recorded, fallback and callable adapters; registry (`register_planner`) |
 | Parsing | `backend/parsing.py` | one model-reply parser for plan and world replies |
 | Validation | `backend/verifier/harness.py` (`verify_plan`), `backend/vision/map_vision.py` (`check_world_report`) | deterministic per-check verdicts; unproven is `None`, never a pass |
 | Simulation | `backend/guard/pipeline.py` (`simulate`), `gemmabot/simulator.py` | step loop and grid physics (single source of truth) |

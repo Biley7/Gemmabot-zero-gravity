@@ -231,6 +231,9 @@ server {
 | `GEMINI_API_KEY` | **Yes** (for API mode) | — | Google AI Studio key |
 | `GEMMA_API_MODEL` | No | `gemma-4-26b-a4b-it` | Cloud model name |
 | `OLLAMA_MODEL` | No | `gemma4:e4b` | Local Ollama model name |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | Model id an OpenAI-compatible endpoint serves |
+| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | Any chat-completions endpoint (vLLM, LM Studio…) |
+| `OPENAI_API_KEY` | No | — | Required only for the hosted OpenAI endpoint |
 | `MAX_REPAIRS` | No | `2` | Repair loop cap (total tries = MAX_REPAIRS + 1) |
 
 ---

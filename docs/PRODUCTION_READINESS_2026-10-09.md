@@ -420,3 +420,45 @@ closed as an interface only: no cloud infrastructure, no auth, no metering.
 Blockers 1 (live E2E on real inputs), 2 and 3, the unauthenticated deployment
 surface, per-call timeouts/cancellation, auth and metering (§22 C1/C3/C4) and CI
 are unchanged; this phase adds an interface, not the service around it.
+
+## 22. Phase 9 — Model agnostic planning (2026-10-14)
+
+The planner layer is now structurally model-agnostic: Gemma remains the
+flagship and demo model, but nothing in the verification layer, the plan
+contract or the UI is keyed to it.
+
+* **One planner interface, many adapters.** `backend.guard.planner.Planner`
+  (`propose(instruction, world) -> str`) already abstracted the transports;
+  Phase 9 completes the shipped adapter set: the flagship Gemma-over-Gemini
+  (`api`), local Ollama (`local`), **any OpenAI-compatible chat-completions
+  endpoint** (`openai` — OpenAI, vLLM, LM Studio, Ollama's OpenAI mode;
+  stdlib transport, `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_API_KEY` in
+  `gemmabot/config.py`, a key required only for the hosted OpenAI endpoint),
+  a **mock** planner (`mock` — deterministic scripted replies, no network), a
+  **recorded** planner (`recorded` — replays replies captured from a real
+  planner), plus the existing fallback policy and the `ask(instruction, world)`
+  callable adapter.  `register_planner` remains the way a deployment adds a
+  backend without touching the guard or the UI.
+* **One plan contract, one parser.** Every adapter answers with reply *text*;
+  `backend.parsing.parse_plan_reply` is the single normalisation step, and
+  `backend.api.planner.plan` returns the same `RunResult` contract whatever
+  planner ran.  `tests/test_planner_adapters.py` pins that on the exact final
+  code: six adapters, one normalised `(thought, actions)`, identical
+  verification verdicts and identical results once the planner's own name,
+  its live/synthetic provenance and wall-clock latency are dropped.
+* **The UI names the planner, not a vendor.** The Guard panel's MODEL row
+  (`frontend/panels/brain.model_display`) reads "Gemma 4" for a Gemma id on
+  any transport, "Local Model" for the local Ollama transport, the endpoint's
+  own model id verbatim for an OpenAI-compatible backend, and "Custom
+  Planner" for a planner that is neither — mock, recorded, scripted, or a
+  name a deployment registered.  Nothing in the display layer infers a model
+  family from a backend name.
+* **Provenance stays honest.** `contracts.resolve_mode` reports `live` for
+  named model endpoints and `synthetic` for mock/recorded/scripted planners,
+  so a benchmark can never record a scripted run as a model measurement.
+
+**Not claimed:** no live run against a real OpenAI-compatible endpoint has
+been exercised (transport is unit-tested at the socket boundary with
+`urllib.request.urlopen` patched); the sidebar still offers API / Local /
+Auto — custom planners are reached through `backend.api.planner.plan`,
+`get_ask`, or deployment registration, not a UI control yet.

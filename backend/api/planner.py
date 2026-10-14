@@ -16,13 +16,14 @@ simulator.
 Two ways in, one contract out
 -----------------------------
 * **An instruction** — a planner answers it.  ``backend`` selects one of the
-  shipped adapters (``api``, ``local``, ``auto``) or any name a deployment
-  registered; ``planner=`` takes a ``Planner`` object or a plain
-  ``ask(instruction, world) -> str`` callable, which is how a test or a tool runs
-  the loop with no network at all.
-* **A plan you already have** — pass ``plan=[...]`` (whatever produced it) and no
-  planner is consulted: the supplied plan is verified and approved exactly as a
-  model's answer would be, and ``planner`` reports ``"supplied"``.
+  shipped adapters (``api``, ``local``, ``openai``, ``auto``) or any name a
+  deployment registered (``mock`` and ``recorded`` are shipped too); the plan
+  contract is the same for every one of them.  ``planner=`` takes a
+  ``Planner`` object or a plain ``ask(instruction, world) -> str`` callable,
+  which is how a test or a tool runs the loop with no network at all.
+* **A plan you already have** — pass ``plan=[...]`` (whatever produced it) and
+  no planner is consulted: the supplied plan is verified and approved exactly
+  as a model's answer would be, and ``planner`` reports ``"supplied"``.
 """
 from __future__ import annotations
 
@@ -50,7 +51,10 @@ SUPPLIED = "supplied"
 # The planner names the shipped adapters answer to.  Anything else is either a
 # name a deployment registered with ``guard.planner.register_planner`` or not a
 # planner at all — :func:`build` resolves both by asking the registry.
-SHIPPED_BACKENDS: tuple[str, ...] = ("api", "local", "auto")
+# Gemma (``api``) remains the flagship; ``openai`` is the generic OpenAI-
+# compatible endpoint, and ``mock`` / ``recorded`` run the same contract with
+# no model at all.
+SHIPPED_BACKENDS: tuple[str, ...] = ("api", "local", "openai", "auto")
 
 
 def _planner_from(value: Any) -> Any:

@@ -149,10 +149,15 @@ def status_bar_html(*, key: str, activity: str = "", meta: str = "") -> str:
     *key* is a :data:`STATUSES` key that the caller derived from real state;
     *activity* is the sentence explaining it; *meta* is an optional right-hand
     readout (coordinates, steps — technical data, so mono).
+
+    The bar is a live region (``role='status'``, ``aria-live='polite'``) so a
+    screen reader hears the run's state change — READY → THINKING → VERIFYING
+    → EXECUTING → COMPLETE — instead of having to poll a repaint.
     """
     resolved = key if key in STATUSES else "ready"
     return (
-        f"<div class='gb-console-bar' data-status='{_e(resolved)}'>"
+        f"<div class='gb-console-bar' role='status' aria-live='polite' "
+        f"data-status='{_e(resolved)}'>"
         f"{status_chip_html(resolved, activity)}"
         f"<span class='gb-console-activity'>{_e(activity)}</span>"
         + (

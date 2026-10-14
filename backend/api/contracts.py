@@ -57,7 +57,7 @@ MODE_SYNTHETIC = "synthetic"
 # A planner whose name says it is scripted never called a model.  This is the
 # same convention the benchmark and the run log use, kept here so the API
 # reports provenance the same way the rest of the platform does.
-_SCRIPTED_MARKERS: tuple[str, ...] = ("dry", "scripted", "fake")
+_SCRIPTED_MARKERS: tuple[str, ...] = ("dry", "scripted", "fake", "mock", "recorded")
 
 # The input kinds the run log knows (``backend.logger.log_run``).  An API run is
 # a text instruction unless the caller says otherwise; a value outside these
@@ -283,7 +283,7 @@ def resolve_mode(planner_name: Any, declared: Any = None) -> str | None:
     name = str(planner_name or "").strip().lower()
     if any(marker in name for marker in _SCRIPTED_MARKERS):
         return MODE_SYNTHETIC
-    if name in ("api", "ollama", "local", "auto", "gemini"):
+    if name in ("api", "ollama", "local", "auto", "gemini", "openai"):
         return MODE_LIVE
     return None
 

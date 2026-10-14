@@ -138,17 +138,24 @@ def dry_vision_ask(correct_on_attempt: int = 2) -> VisionAskFn:
 # ---------------------------------------------------------------------------
 
 def _normalise(backend_name: str) -> str:
-    """Map UI/CLI backend names onto ``api`` / ``local`` / ``auto`` / ``dry``."""
+    """Map UI/CLI backend names onto ``api`` / ``local`` / ``auto`` / ``dry``.
+
+    Registered non-model planners (``openai``, ``mock``, ``recorded``) pass
+    through under their own names so a run can be asked, labelled and logged
+    without the UI knowing a vendor.
+    """
     name = (backend_name or "auto").strip().lower()
     if name in ("api", "gemini", "google"):
         return "api"
     if name in ("local", "ollama", "gemma"):
         return "local"
+    if name in ("openai", "mock", "recorded"):
+        return name
     if name in ("auto", DRY_BACKEND):
         return name
     raise ValueError(
         f"unknown backend {backend_name!r}; expected one of "
-        f"('api', 'local', 'auto', '{DRY_BACKEND}')"
+        f"('api', 'local', 'openai', 'mock', 'recorded', 'auto', '{DRY_BACKEND}')"
     )
 
 
@@ -232,6 +239,10 @@ def get_ask(
             if local_fn is not None
             else _as_ask(CallablePlanner("ollama", _planner_functions()[1]), name)
         )
+    if name in ("openai", "mock", "recorded"):
+        # Non-Gemma planners come from the guard registry — the model-agnostic
+        # adapters, resolved by name, with the engine only selecting.
+        return _as_ask(build_planner(name), name)
 
     if api_fn is None or local_fn is None:
         default_api, default_local = _planner_functions()
@@ -243,12 +254,10 @@ def get_ask(
 def _used_backend_label(requested: str, ask_fn: Callable) -> str:
     """Report which backend actually produced replies (auto resolves itself)."""
     name = _normalise(requested)
-    if name == "api":
-        return "api"
+    if name in ("api", "openai", "mock", "recorded", DRY_BACKEND):
+        return name
     if name == "local":
         return "ollama"
-    if name == DRY_BACKEND:
-        return DRY_BACKEND
     state = getattr(ask_fn, "backend_state", None)
     if isinstance(state, dict):  # legacy/test shape
         return state.get("used") or "auto"
@@ -257,10 +266,17 @@ def _used_backend_label(requested: str, ask_fn: Callable) -> str:
 
 # Display name per backend label.  ``local`` is the UI alias of ``ollama``
 # (see ``_normalise``) and shares its label so the two never diverge.
+# ``mock`` / ``recorded`` run the same planning contract with no model — the
+# UI says "Custom Planner" for exactly them, and for anything else that is
+# neither a named model endpoint nor the dry reader a deployment registered
+# (the MODEL row resolves that on its own).
 BACKEND_DISPLAY = {
     "api": "API (Gemini)",
     "ollama": "Ollama (local)",
     "local": "Ollama (local)",
+    "openai": "OpenAI-compatible",
+    "mock": "Custom Planner",
+    "recorded": "Custom Planner",
     "auto": "Auto (API → Ollama)",
     "dry": "Scripted (dry mode)",
 }
@@ -285,27 +301,31 @@ MODE_SYNTHETIC = "synthetic"
 def backend_mode(backend_name: str) -> str:
     """``"live"`` or ``"synthetic"`` for the backend the caller is about to use.
 
-    Only the scripted dry reader is synthetic; every other selection calls a real
-    model endpoint.  Callers record this on the run so the benchmark never has to
+    The scripted dry reader, a mock and a recorded replay are synthetic — they
+    produce no new model reply; every other selection calls a real model
+    endpoint.  Callers record this on the run so the benchmark never has to
     infer provenance from a run's numbers.
     """
-    return MODE_SYNTHETIC if _normalise(backend_name) == DRY_BACKEND else MODE_LIVE
+    name = _normalise(backend_name)
+    return MODE_SYNTHETIC if name in (DRY_BACKEND, "mock", "recorded") else MODE_LIVE
 
 
 def backend_model(backend: str) -> str | None:
     """The model id ``gemmabot.config`` holds for *backend*, or ``None``.
 
     The ids are the real configuration values.  ``auto`` is only resolved once
-    a reply has arrived, so an unresolved ``auto`` claims no model, and dry
-    mode uses no model at all.
+    a reply has arrived, so an unresolved ``auto`` claims no model, and a mock,
+    a recorded replay or the dry reader uses no model at all.
     """
-    from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL
+    from gemmabot.config import GEMMA_API_MODEL, OLLAMA_MODEL, OPENAI_MODEL
 
     name = (backend or "").strip().lower()
     if name == "api":
         return GEMMA_API_MODEL
     if name in ("ollama", "local"):
         return OLLAMA_MODEL
+    if name == "openai":
+        return OPENAI_MODEL
     return None
 
 
@@ -363,6 +383,13 @@ def get_vision_ask(
             else _as_vision_ask(
                 CallableVisionPlanner("ollama", _vision_functions()[1]), name
             )
+        )
+    if name in ("openai", "mock", "recorded"):
+        # These are text-planning adapters; there is no vision reader behind
+        # them, so a vision run never silently degrades to ``auto``.
+        raise ValueError(
+            f"backend {backend_name!r} has no vision reader; expected one of "
+            f"('api', 'local', 'auto', '{DRY_BACKEND}')"
         )
 
     if api_fn is None or local_fn is None:

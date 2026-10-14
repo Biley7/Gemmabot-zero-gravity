@@ -21,7 +21,9 @@ BORDER_STRONG  = "#4a4f5c"   # active / focused border
 # ── Text ────────────────────────────────────────────────────────────────────
 TEXT_PRIMARY   = "#e8eaf0"   # main readable text
 TEXT_SECONDARY = "#9299a8"   # labels, captions
-TEXT_MUTED     = "#5c6270"   # disabled, placeholder
+TEXT_MUTED     = "#7e8593"   # disabled, placeholder — lifted from the old
+                              # #5c6270 so the smallest labels hold ≥4.5:1
+                              # against every panel surface (WCAG AA)
 TEXT_INVERSE   = "#0e0f11"   # text on light badge backgrounds
 
 # ── Accent ──────────────────────────────────────────────────────────────────
@@ -55,7 +57,9 @@ GRID_WALL           = "#2a2d35"   # wall cell
 GRID_GOAL           = "#1a2210"   # goal cell
 GRID_ROBOT          = "#0d1e2e"   # robot cell
 GRID_BORDER         = "#252830"   # cell border
-GRID_LABEL          = "#5c6270"   # coordinate axis labels
+GRID_LABEL          = "#7e8593"   # coordinate axis labels — same AA lift as
+                                  # TEXT_MUTED: they sit on BG_INSET and must
+                                  # be readable next to the board
 
 # Additional cell states for the hero grid
 GRID_PATH           = "#0d1e2e"   # cells on executed path
@@ -77,5 +81,5 @@ GRID_HOVER          = "#1e2230"   # cell hover overlay
 
 # ── Monospace telemetry ──────────────────────────────────────────────────────
 TELEMETRY_VALUE = "#c8d0e0"  # metric value
-TELEMETRY_LABEL = "#5c6270"  # metric label
+TELEMETRY_LABEL = "#7e8593"  # metric label — AA on panel surfaces
 TELEMETRY_UNIT  = "#9299a8"  # unit suffix (s, ms, %)

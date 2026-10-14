@@ -404,7 +404,15 @@ def world_grid_html(
     cs = cell_px
 
     parts: list[str] = [_hero_css(cs)]
-    parts.append("<div class='gb-hero-grid'>")
+    # The board is one image to a screen reader: its world is a sentence, its
+    # 64 SVG cells are decoration inside a labelled region.
+    summary = (
+        f"{SIZE} by {SIZE} grid: robot at [{robot[0]}, {robot[1]}] facing {dirn}; "
+        f"goal at [{goal[0]}, {goal[1]}]; {len(wall_set)} obstacle(s)"
+    )
+    parts.append(
+        f"<div class='gb-hero-grid' role='img' aria-label='{html.escape(summary)}'>"
+    )
 
     # ── Column coordinate labels ──────────────────────────────────────────
     parts.append("<div class='gb-hero-colrow'>")

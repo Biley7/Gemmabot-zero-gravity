@@ -63,6 +63,18 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
 # The environment variable the Google GenAI SDK reads for the API backend.
 API_KEY_ENV = "GEMINI_API_KEY"
 
+# OpenAI-compatible planner — any endpoint speaking the chat-completions shape
+# (OpenAI, vLLM, LM Studio, Ollama's OpenAI mode, OpenRouter).  The planner is
+# configured, not hard-coded: a deployment points OPENAI_MODEL at whatever the
+# endpoint serves and the plan contract stays the project's.
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+try:
+    OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "120"))
+except ValueError:
+    OPENAI_TIMEOUT = 120.0
+
 
 def api_key() -> str:
     """The configured API key value, or ``""`` when unset.
@@ -75,6 +87,35 @@ def api_key() -> str:
 def has_api_key() -> bool:
     """True when an API key is present.  Reports presence, never the value."""
     return bool(api_key())
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible credential helpers — same policy as api_key(): presence
+# only, never a value in a log or a display surface.
+# ---------------------------------------------------------------------------
+
+def openai_api_key() -> str:
+    """The configured OpenAI-compatible key value, or ``""`` when unset.
+
+    Keyless local endpoints (vLLM, LM Studio, Ollama) are legitimate: the key
+    is required only when the base URL is the hosted OpenAI API.
+    """
+    return os.getenv(OPENAI_API_KEY_ENV, "").strip()
+
+
+def openai_needs_key(base_url: str | None = None) -> bool:
+    """True when *base_url* is the hosted OpenAI API and no key is set."""
+    url = (base_url or OPENAI_BASE_URL).lower()
+    return "api.openai.com" in url and not openai_api_key()
+
+
+def openai_missing_key_message() -> str:
+    """A readable failure for callers about to make an OpenAI-compatible call."""
+    return (
+        "No OpenAI-compatible API key configured (OPENAI_API_KEY). The hosted "
+        "OpenAI endpoint requires one; a self-hosted endpoint should set "
+        "OPENAI_BASE_URL instead. Nothing was sent anywhere."
+    )
 
 
 def missing_api_key_message() -> str:
