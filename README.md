@@ -81,14 +81,14 @@ AI model → Planner adapter → GemmaBot Guard → Approved plan → Simulator
                              (validate · simulate · repair)      (Robot/ROS: not yet)
 ```
 
-The guard is importable without Streamlit:
+The API is importable without Streamlit:
 
 ```python
-from backend.guard import build_planner, plan, execute
+from backend.api import planner, runtime
 
-result = plan("go to the goal", world, build_planner("auto"))
-if (approved := result["approved"]) is not None:   # set only when verification passed
-    outcome = execute(approved)                    # re-verified + digest-checked
+result = planner.plan("go to the goal", world, backend="auto")
+if result["approved"] is not None:     # set only when verification passed
+    outcome = runtime.execute(result)  # re-verified + digest-checked
 ```
 
 The running architecture — `app.py` → `frontend/panels/engine.py` →
@@ -96,6 +96,27 @@ The running architecture — `app.py` → `frontend/panels/engine.py` →
 `gemmabot/simulator.py` — is documented in `docs/ARCHITECTURE.md`; the canonical
 shapes are defined in `backend/guard/contracts.py` and described in
 `docs/CONTRACTS.md`.
+
+## Programmatic API
+
+The same guard is available to scripts, services and CI — no console:
+
+```python
+from backend.api import planner, runtime, runs
+
+result = planner.plan("go to the goal", world, planner=my_planner, max_tries=3)
+if result["approved"] is not None:            # None means the verifier refused
+    outcome = runtime.execute(result)         # approved plans only, re-verified
+    runs.record(result, execution=outcome)    # logs/runs.jsonl, replayable
+```
+
+`backend.api` provides the versioned caller-facing contracts — `planner.plan`,
+`guard.verify` / `approve` / `simulate`, `repair.replan`, `runtime.execute`,
+`runs.record` — with structured results (`approved`, `reason`, `actions`,
+`attempts`, `verification`, `simulation`, `execution`).  Execution is
+impossible without a sealed `ApprovedPlan`, and a refusal is a result, not an
+exception.  Full reference: `docs/API.md`.  These are stable contracts under
+test, not yet a production SDK — no auth, metering or cloud infrastructure.
 
 ## Run History
 

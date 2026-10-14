@@ -5,6 +5,12 @@ and produced by the running system; verify any change here against that module,
 `backend/verifier/harness.py`, `backend/vision/map_vision.py`,
 `backend/guard/pipeline.py` and `backend/logger/logger.py`.
 
+The **public programmatic shapes** — `RunResult`, `ExecutionOutcome`, the
+request validators and the `ContractError` / `NotApprovedError` rules — live in
+**`backend/api/contracts.py`** and wrap these canonical shapes; they are
+documented in `docs/API.md`.  A shape is defined in exactly one of the two
+places, and the API never re-defines what the guard already owns.
+
 ## World
 
 ```json
@@ -144,8 +150,21 @@ if (approved := result["approved"]) is not None:
 
 The Streamlit app uses the same pipeline through `frontend/panels/engine.py`
 (`import engine` → `run_plan`, `approve`, `execute_approved`, `run_map_vision`,
-`simulate`). There is no `gemmabot.service.run_instruction()`; a versioned
-programmatic API is a known gap.
+`simulate`). The **programmatic API** (`backend/api`, documented in
+`docs/API.md`) is the caller-facing version of the same interface:
+
+```python
+from backend.api import planner, runtime, runs
+
+result = planner.plan("go to the goal", world, backend="auto")
+if result["approved"] is not None:
+    outcome = runtime.execute(result)          # the same execution gate
+    runs.record(result, execution=outcome)
+```
+
+There is no `gemmabot.service.run_instruction()`: `backend.api` is the
+supported entry point for code, and it executes only through
+`backend.guard.pipeline.execute` with a sealed `ApprovedPlan`.
 
 ## Run-log record — `logs/runs.jsonl`
 

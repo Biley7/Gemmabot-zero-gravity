@@ -381,3 +381,42 @@ no result can be read as a model comparison on too few runs.
 **Still open:** blockers 1, 2, 3, 5 and the unauthenticated deployment surface
 are unchanged; the live matrix still needs a reachable backend and a human to
 run it, and there is still no CI to enforce the provenance rule automatically.
+
+## 21. Phase 8 — Programmatic API (2026-10-13)
+
+The audit's first product gap — "**no programmatic API** — only Streamlit drives
+the engine" (§16, item 5) — is now closed as an interface, and deliberately
+closed as an interface only: no cloud infrastructure, no auth, no metering.
+
+* **`backend/api`** is the caller-facing door over the same guard:
+  `planner.plan` (instruction → sealed plan, propose · verify · repair),
+  `guard.verify` / `guard.approve` / `guard.simulate`, `repair.replan`,
+  `runtime.execute` and `runs.record`.  It imports no Streamlit and no vendor
+  SDK (`tests/test_api.py` proves both in a subprocess), so a script, a service
+  or CI can use the platform without the console.
+* **Stable, versioned contracts.** Every result carries `api_version` (`"1.0"`)
+  and every documented key is always present — in a refusal as much as in an
+  approval.  `RunResult` carries `approved`, `reason`, `actions`, `attempts`,
+  `verification`, `simulation`, `execution` and the run's provenance;
+  `ExecutionOutcome` carries the same fields for an execution.  Defined in
+  `backend/api/contracts.py`, documented in `docs/API.md`, pinned by 60 tests.
+* **Execution is impossible without an approval, through the public API too.**
+  `runtime.execute` accepts only a sealed `ApprovedPlan` or the result carrying
+  one; a plan list, a world, a refused result, a `guard.simulate` demonstration,
+  a hand-rolled mapping, a tampered seal and a fabricated digest are all
+  refused — the last two after the guard re-verifies and re-checks the digest,
+  with an empty step log and nothing executed.
+* **Refusals are results.** A rejected plan returns `approved: null`,  the verifier's own `reason` and its structured checks; exceptions are reserved
+  for a malformed request (`ContractError`) or an attempted unapproved
+  execution (`NotApprovedError`).  A failed run can be repaired from outside:
+  `repair.replan` re-asks the original instruction with the previous refusal in
+  the guard's own repair-prompt format.
+* **Execution is recorded, not inferred.** `runs.record` writes one run-log
+  record — the same schema the Run History and RobotBench read — and derives the
+  step count, halt, end position and goal only when the simulation really
+  stepped.  A planning run never records an execution it did not have.
+
+**Not claimed:** still not "production-ready" and not yet a "production SDK".
+Blockers 1 (live E2E on real inputs), 2 and 3, the unauthenticated deployment
+surface, per-call timeouts/cancellation, auth and metering (§22 C1/C3/C4) and CI
+are unchanged; this phase adds an interface, not the service around it.

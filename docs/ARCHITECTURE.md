@@ -48,6 +48,7 @@ re-computes the approval digest before a single simulator step runs.
 | Execution | `backend/guard/pipeline.py` (`execute`) | approval required, re-verified, digest-checked, then simulates |
 | Logging | `backend/logger/logger.py` | JSONL run records, provenance mode, secret redaction |
 | Contracts | `backend/guard/contracts.py` | canonical World / Action / Plan / VerificationResult / ExecutionResult / ApprovedPlan |
+| Programmatic API | `backend/api/*` | the caller-facing, versioned contracts over the guard — `planner`, `guard`, `repair`, `runtime`, `runs` — with no Streamlit import |
 
 There are no duplicate implementations: the planner, the repair loop and map
 vision all parse through `backend.parsing`; the UI, the logs and the tests all
@@ -158,6 +159,7 @@ owning any validation logic.
 | `backend/verifier/harness.py` | `verify_plan`, `dry_run`, `plan_with_repair` |
 | `backend/vision/map_vision.py` | `read_map`, `check_world_report`, `ask_vision_api`, `ask_vision_ollama` |
 | `backend/logger/logger.py` | `log_run` (the twelve-field run record + `actions`/`world`/`mode`), `load_runs`, `summarize_run`, secret redaction |
+| `backend/api/{contracts,planner,guard,repair,runtime,runs}.py` | the programmatic API: request validation, the six namespaces, the execution gate, run recording |
 | `gemmabot/simulator.py` | 8×8 world, `step`, `render`, `reached_goal` (physics source of truth) |
 | `gemmabot/{config,prompts,benchmark}.py` | configuration, prompts, the RobotBench runner (metrics, result records, report) |
 | `gemmabot/{planner,harness,logger,map_vision}.py`, root `engine.py`, `ui_helpers.py` | 3–9 line compatibility shims that re-export the real modules |
@@ -180,9 +182,21 @@ runtime shapes) was **deleted in the Phase-1 refactor**. The canonical
 contracts now live in `backend/guard/contracts.py`; `docs/CONTRACTS.md`
 describes them.
 
-## Interface
+## Interfaces
 
-The guard is importable without Streamlit:
+Two doors, one guard.  The programmatic API is the caller-facing one:
+
+```python
+from backend.api import planner, runtime, runs
+
+result = planner.plan("go to the goal", world, backend="auto")
+if result["approved"] is not None:
+    outcome = runtime.execute(result)            # re-verified, digest-checked
+    runs.record(result, execution=outcome)
+```
+
+The guard package is the same pipeline one level down, unversioned internals
+included:
 
 ```python
 from backend.guard import build_planner, plan, execute
@@ -193,9 +207,9 @@ if (approved := result["approved"]) is not None:
 ```
 
 The Streamlit app reaches the same pipeline through `frontend/panels/engine.py`
-(`import engine`). There is no `service.py` and no `run_instruction()`; a
-versioned programmatic API is a known gap, and the guard package is the
-foundation it will be built on.
+(`import engine`). There is no `service.py` and no `run_instruction()`: the
+versioned interface is `backend.api`, documented in `docs/API.md`, and both it
+and the console execute only through the same sealed `ApprovedPlan`.
 
 ## Deliberately absent (Phase 1 scope)
 

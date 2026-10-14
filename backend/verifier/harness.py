@@ -518,6 +518,12 @@ def _repair_prompt(original_instruction: str, failed_plan: str, reason: str) -> 
     )
 
 
+# The repair prompt under a public name: ``backend.api.repair`` seeds the first
+# prompt of a replan with the exact text this loop uses for its own repairs, so
+# a replanned attempt is the same kind of repair as a repaired one.
+repair_prompt = _repair_prompt
+
+
 # ---------------------------------------------------------------------------
 # Self-test (no AI, no network)
 # ---------------------------------------------------------------------------
